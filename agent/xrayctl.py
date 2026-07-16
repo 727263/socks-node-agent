@@ -22,10 +22,11 @@ def inbound_to_xray(inb: dict[str, Any]) -> dict[str, Any]:
     else:
         settings_obj = settings or {}
 
-    # Xray socks 官方字段是 users；兼容面板常用的 accounts
-    if "accounts" in settings_obj and "users" not in settings_obj:
+    # Xray-core socks/mixed 入站账号字段是 accounts（与 3X-UI 一致）。
+    # 若上游误传 users，统一转回 accounts，否则 xray 读不到账号会拒绝所有登录。
+    if "users" in settings_obj and "accounts" not in settings_obj:
         settings_obj = dict(settings_obj)
-        settings_obj["users"] = settings_obj.pop("accounts")
+        settings_obj["accounts"] = settings_obj.pop("users")
 
     sniff = inb.get("sniffing", "{}")
     if isinstance(sniff, str):
