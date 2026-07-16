@@ -70,17 +70,64 @@ info "安装目录: ${AGENT_HOME}"
 info "Agent 端口: ${AGENT_PORT}  共享 SOCKS: ${SHARED_PORT}  专属端口段: ${PORT_RANGE_START}-${PORT_RANGE_END}"
 info "源码目录: ${BUNDLE_DIR}"
 
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl ca-certificates python3 python3-venv python3-pip unzip openssl tar
-elif command -v yum >/dev/null 2>&1; then
-  yum install -y curl ca-certificates python3 python3-pip unzip openssl tar
-elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y curl ca-certificates python3 python3-pip unzip openssl tar
-else
-  warn "未识别包管理器，请确保已安装 python3 / curl / unzip / openssl / tar"
-fi
+have_os_deps() {
+  command -v python3 >/dev/null \
+    && command -v curl >/dev/null \
+    && command -v openssl >/dev/null \
+    && command -v tar >/dev/null
+}
+
+wait_for_dpkg_lock() {
+  local max_wait="${1:-300}"
+  local waited=0
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+    if [[ "${waited}" -eq 0 ]]; then
+      warn "dpkg 正被其他进程占用（常见: unattended-upgrades），等待释放..."
+    fi
+    if [[ "${waited}" -ge "${max_wait}" ]]; then
+      warn "等待 dpkg 锁超时（${max_wait}s）"
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  [[ "${waited}" -gt 0 ]] && info "dpkg 锁已释放（等待 ${waited}s）"
+  return 0
+}
+
+install_os_deps() {
+  if have_os_deps; then
+    info "系统依赖已满足，跳过 apt/yum 安装"
+    return 0
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    if wait_for_dpkg_lock 300; then
+      if apt-get update -y && apt-get install -y \
+          curl ca-certificates python3 python3-venv python3-pip unzip openssl tar; then
+        return 0
+      fi
+      warn "apt 安装失败"
+    else
+      warn "无法获取 dpkg 锁，跳过 apt 安装"
+    fi
+    if have_os_deps; then
+      warn "apt 未执行/失败，但现有依赖可用，继续安装"
+      return 0
+    fi
+    error "缺少依赖且 apt 不可用。请稍后重试，或手动: apt install python3 python3-venv curl openssl tar"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y curl ca-certificates python3 python3-pip unzip openssl tar || warn "yum 安装失败"
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y curl ca-certificates python3 python3-pip unzip openssl tar || warn "dnf 安装失败"
+  else
+    warn "未识别包管理器，请确保已安装 python3 / curl / openssl / tar"
+  fi
+}
+
+install_os_deps
 
 command -v python3 >/dev/null || error "需要 python3"
 command -v curl >/dev/null || error "需要 curl"
