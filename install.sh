@@ -150,24 +150,16 @@ cp -a "${BUNDLE_DIR}/agent/." "${AGENT_HOME}/agent/"
 cp -f "${BUNDLE_DIR}/requirements.txt" "${AGENT_HOME}/requirements.txt"
 [[ -f "${BUNDLE_DIR}/uninstall.sh" ]] && cp -f "${BUNDLE_DIR}/uninstall.sh" "${AGENT_HOME}/uninstall.sh"
 
-create_venv() {
-  rm -rf "${AGENT_HOME}/.venv"
-  python3 -m venv "${AGENT_HOME}/.venv" 2>/dev/null
-}
+VENV_DIR="${AGENT_HOME}/.venv"
+VENV_PY="${VENV_DIR}/bin/python"
 
-ensure_venv() {
-  [[ -x "${AGENT_HOME}/.venv/bin/python" ]] && return 0
-  if create_venv; then
-    return 0
-  fi
-  warn "venv 创建失败，尝试安装 python3-venv ..."
+install_venv_pkg() {
   if command -v apt-get >/dev/null 2>&1; then
     local pyver
     pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
     export DEBIAN_FRONTEND=noninteractive
     if wait_for_dpkg_lock 300; then
       apt-get update -y || true
-      # 装通用包与版本专用包（如 python3.12-venv），并补 pip
       apt-get install -y python3-venv python3-pip ${pyver:+python${pyver}-venv} || true
     else
       warn "无法获取 dpkg 锁，稍后请手动: apt install python3-venv"
@@ -177,24 +169,45 @@ ensure_venv() {
   elif command -v yum >/dev/null 2>&1; then
     yum install -y python3-virtualenv python3-pip || true
   fi
-  if create_venv; then
+}
+
+# 尝试用标准 venv 建环境（3.12 失败会自清目录，需重试）
+try_std_venv() {
+  rm -rf "${VENV_DIR}"
+  python3 -m venv "${VENV_DIR}" 2>/dev/null && [[ -x "${VENV_PY}" ]]
+}
+
+# 无 ensurepip 时：--without-pip 建环境，再 get-pip 补 pip
+try_venv_without_pip() {
+  rm -rf "${VENV_DIR}"
+  python3 -m venv --without-pip "${VENV_DIR}" 2>/dev/null || return 1
+  [[ -x "${VENV_PY}" ]] || return 1
+  if ! "${VENV_PY}" -m pip --version >/dev/null 2>&1; then
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || return 1
+    "${VENV_PY}" /tmp/get-pip.py >/dev/null 2>&1 || { rm -f /tmp/get-pip.py; return 1; }
+    rm -f /tmp/get-pip.py
+  fi
+  return 0
+}
+
+ensure_venv() {
+  if try_std_venv && "${VENV_PY}" -m pip --version >/dev/null 2>&1; then
     return 0
   fi
-  # 最后回退：无 ensurepip 时用 --without-pip + get-pip.py
-  warn "仍失败，尝试 venv(--without-pip) + get-pip ..."
-  if python3 -m venv --without-pip "${AGENT_HOME}/.venv" 2>/dev/null; then
-    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py \
-      && "${AGENT_HOME}/.venv/bin/python" /tmp/get-pip.py \
-      && rm -f /tmp/get-pip.py
+  warn "venv 不可用，安装 python3-venv 后重试 ..."
+  install_venv_pkg
+  if try_std_venv && "${VENV_PY}" -m pip --version >/dev/null 2>&1; then
+    return 0
   fi
-  [[ -x "${AGENT_HOME}/.venv/bin/python" ]] || error "无法创建 Python venv，请手动安装 python3-venv 后重试"
+  warn "标准 venv 仍失败，回退 --without-pip + get-pip ..."
+  try_venv_without_pip && return 0
+  error "无法创建 Python venv。请手动执行: apt install -y python3-venv python3-pip 后重跑安装脚本"
 }
 
 ensure_venv
-# shellcheck disable=SC1091
-source "${AGENT_HOME}/.venv/bin/activate"
-python -m pip install -U pip wheel >/dev/null 2>&1 || warn "pip 升级失败，继续尝试安装依赖"
-python -m pip install -r "${AGENT_HOME}/requirements.txt"
+info "Python venv: $(${VENV_PY} --version 2>&1)"
+"${VENV_PY}" -m pip install -U pip wheel >/dev/null 2>&1 || warn "pip 升级失败，继续尝试安装依赖"
+"${VENV_PY}" -m pip install -r "${AGENT_HOME}/requirements.txt"
 
 ENV_FILE="${AGENT_HOME}/agent.env"
 if [[ -f "${ENV_FILE}" ]]; then
