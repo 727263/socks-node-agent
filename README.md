@@ -37,9 +37,22 @@ curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/instal
 
 ## 防火墙
 
-- **必开**: Agent 端口（默认 9100），建议仅放行 Bot 服务器 IP
-- **专属模式**: 放行 `20000–65000`（或你在 Bot 配置的 port_range）
-- 共享模式: 放行共享 SOCKS 端口
+安装脚本会自动尝试放行（UFW / firewalld / iptables）：
+
+| 端口 | 默认 | 用途 |
+|------|------|------|
+| Agent API | `9100/tcp` | Bot 调管控接口 |
+| 共享 SOCKS | `1080/tcp` | 共享入站 |
+| 专属端口段 | `20000-65000/tcp` | 每用户独立端口 |
+
+可用环境变量覆盖：`AGENT_PORT` / `SHARED_PORT` / `PORT_RANGE_START` / `PORT_RANGE_END`。  
+跳过防火墙：`SKIP_FIREWALL=1`。
+
+注意：
+
+- **不会**自动 `ufw enable`（避免未放行 SSH 把自己锁死）
+- 云厂商安全组仍需在控制台放行相同端口
+- 更安全：安全组里把 `9100` 只放行 Bot 服务器 IP
 
 ## 卸载
 

@@ -7,7 +7,8 @@
 # 本地安装:
 #   cd socks-node-agent && bash install.sh
 #
-# 可选环境变量: AGENT_HOME / AGENT_PORT / SHARED_PORT / AGENT_REPO / AGENT_REF
+# 可选环境变量: AGENT_HOME / AGENT_PORT / SHARED_PORT / PORT_RANGE_START / PORT_RANGE_END
+#              / AGENT_REPO / AGENT_REF / SKIP_FIREWALL
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -24,9 +25,12 @@ error() { echo -e "${RED}[ERR ]${NC} $*" >&2; exit 1; }
 AGENT_HOME="${AGENT_HOME:-/opt/socks-agent}"
 AGENT_PORT="${AGENT_PORT:-9100}"
 SHARED_PORT="${SHARED_PORT:-1080}"
+PORT_RANGE_START="${PORT_RANGE_START:-20000}"
+PORT_RANGE_END="${PORT_RANGE_END:-65000}"
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
 AGENT_REPO="${AGENT_REPO:-727263/socks-node-agent}"
 AGENT_REF="${AGENT_REF:-main}"
+SKIP_FIREWALL="${SKIP_FIREWALL:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 BUNDLE_DIR=""
@@ -63,7 +67,7 @@ else
 fi
 
 info "安装目录: ${AGENT_HOME}"
-info "Agent 端口: ${AGENT_PORT}  共享 SOCKS 端口: ${SHARED_PORT}"
+info "Agent 端口: ${AGENT_PORT}  共享 SOCKS: ${SHARED_PORT}  专属端口段: ${PORT_RANGE_START}-${PORT_RANGE_END}"
 info "源码目录: ${BUNDLE_DIR}"
 
 if command -v apt-get >/dev/null 2>&1; then
@@ -164,6 +168,75 @@ else
   warn "socks-agent 未处于 active，请检查: journalctl -u socks-agent -n 50"
 fi
 
+# ---------- 防火墙：Agent API + 共享 SOCKS + 专属端口段 ----------
+open_firewall() {
+  if [[ "${SKIP_FIREWALL}" == "1" ]]; then
+    warn "已跳过防火墙配置（SKIP_FIREWALL=1）"
+    return 0
+  fi
+  if [[ "${PORT_RANGE_START}" -gt "${PORT_RANGE_END}" ]]; then
+    warn "端口段无效: ${PORT_RANGE_START}-${PORT_RANGE_END}，跳过防火墙"
+    return 0
+  fi
+
+  local opened=0
+
+  if command -v ufw >/dev/null 2>&1; then
+    info "配置 UFW：${AGENT_PORT}/tcp, ${SHARED_PORT}/tcp, ${PORT_RANGE_START}:${PORT_RANGE_END}/tcp"
+    ufw allow "${AGENT_PORT}/tcp" comment 'socks-agent-api' >/dev/null 2>&1 || true
+    ufw allow "${SHARED_PORT}/tcp" comment 'socks-shared' >/dev/null 2>&1 || true
+    ufw allow "${PORT_RANGE_START}:${PORT_RANGE_END}/tcp" comment 'socks-dedicated' >/dev/null 2>&1 || true
+    # 不主动 enable，避免未放行 SSH 时把自己锁死；已启用则规则立即生效
+    if ufw status 2>/dev/null | grep -qi "Status: active"; then
+      info "UFW 已启用，端口规则已生效"
+    else
+      warn "UFW 当前未启用。规则已写入；若要用 UFW，请先放行 SSH 再执行: ufw enable"
+    fi
+    opened=1
+  fi
+
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    info "配置 firewalld：${AGENT_PORT}/tcp, ${SHARED_PORT}/tcp, ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp"
+    firewall-cmd --permanent --add-port="${AGENT_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${SHARED_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${PORT_RANGE_START}-${PORT_RANGE_END}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+    info "firewalld 端口已放行"
+    opened=1
+  fi
+
+  if [[ "${opened}" -eq 0 ]] && command -v iptables >/dev/null 2>&1; then
+    info "配置 iptables（无 UFW/firewalld 时回退）"
+    # 已有同注释规则则跳过，避免重复
+    if ! iptables -C INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; then
+      iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" || true
+    fi
+    if ! iptables -C INPUT -p tcp --dport "${SHARED_PORT}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null; then
+      iptables -I INPUT -p tcp --dport "${SHARED_PORT}" -j ACCEPT -m comment --comment "socks-shared" || true
+    fi
+    if ! iptables -C INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" 2>/dev/null; then
+      iptables -I INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" || true
+    fi
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || true
+    elif command -v service >/dev/null 2>&1 && [[ -f /etc/init.d/iptables ]]; then
+      service iptables save >/dev/null 2>&1 || true
+    else
+      warn "iptables 规则已添加，重启后可能丢失；建议安装 iptables-persistent 或改用 UFW"
+    fi
+    opened=1
+  fi
+
+  if [[ "${opened}" -eq 0 ]]; then
+    warn "未检测到 UFW / firewalld / iptables，请在云厂商安全组手动放行："
+    warn "  ${AGENT_PORT}/tcp  ${SHARED_PORT}/tcp  ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp"
+  else
+    warn "若使用云厂商安全组/面板防火墙，仍需在控制台放行相同端口"
+  fi
+}
+
+open_firewall
+
 PUBLIC_IP="$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo 'YOUR_IP')"
 
 echo
@@ -176,8 +249,9 @@ echo "  API Token:    ${AGENT_API_TOKEN}"
 echo "  inbound_id:   1   (共享占位，专属模式也填 1)"
 echo "  公网 IP:      ${PUBLIC_IP}"
 echo "  SOCKS 端口:   ${AGENT_SHARED_PORT:-$SHARED_PORT}  (节点「SOCKS 端口」填这个)"
+echo "  已尝试放行:   ${AGENT_PORT}(API) / ${SHARED_PORT}(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}(专属)"
 echo "------------------------------------------------------------"
 echo "后台「添加节点」时选「极简 Agent」，把上面几项填进去即可。"
-echo "建议防火墙只允许 Bot 服务器访问 ${AGENT_LISTEN_PORT:-$AGENT_PORT}。"
-echo "专属端口模式请放行 config 里的 port_range（默认 20000-65000）。"
+echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP。"
+echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "============================================================"
