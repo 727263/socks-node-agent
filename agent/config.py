@@ -1,0 +1,37 @@
+"""Agent 运行配置（环境变量 / 安装脚本写入的 env 文件）。"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    listen_host: str = "0.0.0.0"
+    listen_port: int = 9100
+    api_token: str = ""
+    data_dir: str = "/opt/socks-agent/data"
+    xray_bin: str = "/usr/local/bin/xray"
+    xray_config: str = "/usr/local/etc/xray/config.json"
+    xray_api_addr: str = "127.0.0.1:10085"
+    xray_service: str = "xray"
+    # 安装时创建的共享占位入站端口（对应 Bot 节点「SOCKS 端口」）
+    shared_port: int = 1080
+    traffic_sync_seconds: int = 20
+    enforce_seconds: int = 30
+
+
+def load_config() -> AgentConfig:
+    return AgentConfig(
+        listen_host=os.getenv("AGENT_LISTEN_HOST", "0.0.0.0"),
+        listen_port=int(os.getenv("AGENT_LISTEN_PORT", "9100")),
+        api_token=os.getenv("AGENT_API_TOKEN", "").strip(),
+        data_dir=os.getenv("AGENT_DATA_DIR", "/opt/socks-agent/data"),
+        xray_bin=os.getenv("XRAY_BIN", "/usr/local/bin/xray"),
+        xray_config=os.getenv("XRAY_CONFIG", "/usr/local/etc/xray/config.json"),
+        xray_api_addr=os.getenv("XRAY_API_ADDR", "127.0.0.1:10085"),
+        xray_service=os.getenv("XRAY_SERVICE", "xray"),
+        shared_port=int(os.getenv("AGENT_SHARED_PORT", "1080")),
+        traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "20")),
+        enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "30")),
+    )
