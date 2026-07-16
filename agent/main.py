@@ -1,6 +1,7 @@
 """SOCKS Agent HTTP API —— 响应格式对齐 3X-UI，供 Bot 的 panel_type=agent 调用。"""
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -50,31 +51,39 @@ def _enabled_list() -> list[dict]:
     return [i for i in store.list_all() if i.get("enable")]
 
 
+def _normalize_settings(raw: Any) -> str:
+    """统一 settings 为 JSON 字符串，保证 auth + accounts。"""
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            obj = {}
+    elif isinstance(raw, dict):
+        obj = dict(raw)
+    else:
+        obj = {}
+    obj.setdefault("auth", "password")
+    obj.setdefault("udp", False)
+    obj.setdefault("ip", "127.0.0.1")
+    accounts = obj.get("accounts") or obj.get("users") or []
+    if accounts and "accounts" not in obj:
+        obj["accounts"] = accounts
+    obj.pop("users", None)
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def _apply_xray() -> None:
+    """写完整 Xray 配置并重启（比热加载可靠）。"""
+    enabled = _enabled_list()
+    xray.apply_from_store(enabled)
+    ports = sorted({int(i["port"]) for i in enabled if i.get("port")})
+    log.info("Xray reloaded: %d inbounds, ports=%s", len(enabled), ports)
+
+
 def _persist_and_hot(inb: dict, *, live_add: bool) -> None:
-    """落盘完整配置；按需热加载单个入站，失败则重启 Xray。"""
-    xray.write_config(_enabled_list())
-    tag = inb.get("tag") or f"in-{inb['id']}"
-    if live_add and inb.get("enable"):
-        try:
-            try:
-                xray.remove_inbound_live(tag)
-            except Exception:  # noqa: BLE001
-                pass
-            xray.add_inbound_live(inb)
-            return
-        except Exception as e:  # noqa: BLE001
-            log.warning("hot add failed, restart xray: %s", e)
-            xray.restart_service()
-            return
-    if not inb.get("enable"):
-        try:
-            xray.remove_inbound_live(tag)
-        except Exception as e:  # noqa: BLE001
-            log.debug("remove disabled inbound: %s", e)
-            try:
-                xray.restart_service()
-            except Exception:  # noqa: BLE001
-                pass
+    """落盘并全量重启 Xray（live_add 参数保留兼容，已忽略）。"""
+    del inb, live_add
+    _apply_xray()
 
 
 
@@ -221,7 +230,7 @@ async def add_inbound(request: Request):
                 enable=_parse_enable(body.get("enable", True)),
                 total=int(body.get("total") or 0),
                 expiry_time=int(body.get("expiryTime") or 0),
-                settings=body.get("settings"),
+                settings=_normalize_settings(body.get("settings")),
                 stream_settings=body.get("streamSettings") or "{}",
                 sniffing=body.get("sniffing"),
             )
@@ -246,15 +255,13 @@ async def update_inbound(inbound_id: int, request: Request):
                 "expiryTime", "settings", "streamSettings", "sniffing",
             ):
                 if k in body:
-                    fields[k] = body[k]
+                    if k == "settings":
+                        fields[k] = _normalize_settings(body[k])
+                    else:
+                        fields[k] = body[k]
             updated = store.update(inbound_id, fields)
             if updated is None:
                 return JSONResponse(fail(f"inbound {inbound_id} not found"))
-            # 端口/账号/开关变化：先卸再装
-            try:
-                xray.remove_inbound_live(old.get("tag") or f"in-{inbound_id}")
-            except Exception:  # noqa: BLE001
-                pass
             _persist_and_hot(updated, live_add=bool(updated.get("enable")))
         return ok(updated)
     except Exception as e:  # noqa: BLE001
@@ -289,21 +296,25 @@ def del_inbound(inbound_id: int):
                     },
                 )
                 if cleared:
-                    try:
-                        xray.remove_inbound_live(cleared.get("tag") or "in-1")
-                    except Exception:  # noqa: BLE001
-                        pass
                     _persist_and_hot(cleared, live_add=True)
                 return ok(cleared)
             store.delete(inbound_id)
-            try:
-                xray.remove_inbound_live(old.get("tag") or f"in-{inbound_id}")
-            except Exception:  # noqa: BLE001
-                pass
-            xray.write_config(_enabled_list())
+            _persist_and_hot(old, live_add=False)
         return ok(True)
     except Exception as e:  # noqa: BLE001
         log.exception("del inbound failed")
+        return JSONResponse(fail(str(e)))
+
+
+@app.post("/api/xray/reload", dependencies=[Depends(require_token)])
+def reload_xray():
+    """全量从 DB 重写 Xray 配置并重启（迁移/同步后修复用）。"""
+    try:
+        with _ops_lock:
+            _apply_xray()
+        return ok({"inbounds": len(_enabled_list())})
+    except Exception as e:  # noqa: BLE001
+        log.exception("reload xray failed")
         return JSONResponse(fail(str(e)))
 
 

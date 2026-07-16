@@ -78,6 +78,8 @@ def build_full_config(enabled_inbounds: list[dict[str, Any]], api_port: int = 10
         "outbounds": [
             {"protocol": "freedom", "tag": "direct"},
             {"protocol": "blackhole", "tag": "block"},
+            # API 路由必需，否则带 stats/api 的配置可能异常
+            {"protocol": "freedom", "tag": "api"},
         ],
         "routing": {
             "domainStrategy": "AsIs",
@@ -114,6 +116,17 @@ class XrayController:
 
     def restart_service(self) -> None:
         try:
+            # 先校验配置，避免写入坏配置后 xray 起不来
+            test = subprocess.run(
+                [self.xray_bin, "run", "-test", "-config", self.config_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if test.returncode != 0:
+                msg = (test.stderr or test.stdout or "").strip()
+                raise RuntimeError(f"xray config test failed: {msg}")
             subprocess.run(
                 ["systemctl", "restart", self.service_name],
                 check=True,
@@ -123,7 +136,17 @@ class XrayController:
             )
             log.info("Restarted systemd service: %s", self.service_name)
         except Exception as e:  # noqa: BLE001
-            log.warning("systemctl restart failed (%s), try direct reload hint: %s", self.service_name, e)
+            log.warning("systemctl restart failed (%s): %s", self.service_name, e)
+            raise
+
+    def apply_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
+        """写完整配置并重启 Xray（最可靠，避免热加载丢入站）。"""
+        self.write_config(enabled_inbounds)
+        self.restart_service()
+
+    def sync_live_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
+        """安装/启动时全量同步。"""
+        self.apply_from_store(enabled_inbounds)
 
     def _run_api(self, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
         cmd = [self.xray_bin, "api", *args, f"--server={self.api_addr}"]
@@ -209,8 +232,3 @@ class XrayController:
             r = self._run_api(["stats", f"--name={name}", "-reset"])
             if r.returncode != 0:
                 log.debug("reset stats %s: %s", name, (r.stderr or r.stdout or "").strip())
-
-    def sync_live_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
-        """写配置并重启，保证落盘与运行态一致（安装/恢复用）。"""
-        self.write_config(enabled_inbounds)
-        self.restart_service()
