@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# SOCKS 极简 Agent 一键安装：Xray + Agent
+# SOCKS 极简 Agent 一键安装：Agent 管控 Xray
 #
-# 网络安装（推荐）:
-#   curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | bash
+# 可选 Xray 内核（三选一）:
+#   1) 交互菜单（本地 bash install.sh 且有终端）
+#   2) 参数/环境变量: --kernel xui|official  或  XRAY_KERNEL=official
+#   3) 非交互默认 vaxilu XUI 内核（curl | bash 且未指定时）
+#
+# 网络安装:
+#   curl -fsSL .../install.sh | bash
+#   curl -fsSL .../install.sh | XRAY_KERNEL=official bash
 #
 # 本地安装:
-#   cd socks-node-agent && bash install.sh
-#
-# 可选环境变量: AGENT_HOME / AGENT_PORT / SHARED_PORT / PORT_RANGE_START / PORT_RANGE_END
-#              / AGENT_REPO / AGENT_REF / SKIP_FIREWALL
+#   cd node-agent && bash install.sh
+#   bash install.sh --kernel official
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -31,6 +35,90 @@ XRAY_API_PORT="${XRAY_API_PORT:-10085}"
 AGENT_REPO="${AGENT_REPO:-727263/socks-node-agent}"
 AGENT_REF="${AGENT_REF:-main}"
 SKIP_FIREWALL="${SKIP_FIREWALL:-0}"
+XRAY_KERNEL="${XRAY_KERNEL:-}"
+VAXILU_XUI_REPO="${VAXILU_XUI_REPO:-vaxilu/x-ui}"
+VAXILU_XUI_TAG="${VAXILU_XUI_TAG:-}"
+
+usage() {
+  cat <<'EOF'
+用法: install.sh [选项]
+
+  --kernel, -k xui|official   指定 Xray 内核（不指定则交互选择或见默认）
+  --help, -h                    显示帮助
+
+环境变量:
+  XRAY_KERNEL=xui|official      与 --kernel 相同（curl 管道安装时用）
+
+内核:
+  xui       vaxilu 旧版 XUI 发布包 Xray（较旧，与 XUI 面板同款）
+  official  XTLS 官方最新 Xray（xray-install）
+
+示例:
+  bash install.sh
+  bash install.sh --kernel official
+  curl -fsSL .../install.sh | XRAY_KERNEL=xui bash
+EOF
+}
+
+normalize_xray_kernel() {
+  case "$(echo "${1}" | tr '[:upper:]' '[:lower:]')" in
+    xui|vaxilu|x-ui|1) echo xui ;;
+    official|xtls|latest|2) echo official ;;
+    "") echo "" ;;
+    *) echo "invalid" ;;
+  esac
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -k|--kernel)
+        [[ $# -ge 2 ]] || error "--kernel 需要参数: xui 或 official"
+        XRAY_KERNEL="$(normalize_xray_kernel "$2")"
+        [[ "${XRAY_KERNEL}" != "invalid" ]] || error "无效内核: $2（可用 xui / official）"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      xui|official|vaxilu|x-ui|xtls|latest)
+        XRAY_KERNEL="$(normalize_xray_kernel "$1")"
+        shift
+        ;;
+      *)
+        error "未知参数: $1（用 --help 查看）"
+        ;;
+    esac
+  done
+}
+
+choose_xray_kernel() {
+  if [[ -n "${XRAY_KERNEL}" ]]; then
+    local raw="${XRAY_KERNEL}"
+    XRAY_KERNEL="$(normalize_xray_kernel "${raw}")"
+    [[ "${XRAY_KERNEL}" != "invalid" ]] || error "无效 XRAY_KERNEL=${raw}，可用: xui / official"
+    return
+  fi
+
+  if [[ -t 0 ]]; then
+    echo
+    echo "请选择 Xray 内核:"
+    echo "  1) vaxilu XUI 内核  — 旧版 XUI 发布包同款，较旧，兼容性好"
+    echo "  2) XTLS 官方最新    — xray-install 安装的最新版"
+    echo
+    local choice=""
+    read -rp "请输入 [1/2] (默认 1): " choice
+    choice="${choice:-1}"
+    XRAY_KERNEL="$(normalize_xray_kernel "${choice}")"
+    [[ "${XRAY_KERNEL}" != "invalid" ]] || error "无效选择: ${choice}"
+  else
+    XRAY_KERNEL="xui"
+    info "非交互安装，默认 vaxilu XUI 内核（改用官方版: XRAY_KERNEL=official）"
+  fi
+}
+
+parse_args "$@"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 BUNDLE_DIR=""
@@ -133,16 +221,142 @@ install_os_deps
 command -v python3 >/dev/null || error "需要 python3"
 command -v curl >/dev/null || error "需要 curl"
 
-if [[ ! -x /usr/local/bin/xray ]]; then
-  info "安装 Xray-core ..."
-  bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-else
-  info "已存在 Xray: $(/usr/local/bin/xray version 2>/dev/null | head -n1 || true)"
-fi
-[[ -x /usr/local/bin/xray ]] || error "Xray 安装失败"
+choose_xray_kernel
+info "已选 Xray 内核: ${XRAY_KERNEL} ($([[ ${XRAY_KERNEL} == xui ]] && echo 'vaxilu XUI' || echo 'XTLS 官方'))"
+
+detect_xui_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    armv7l|armv7) echo arm64 ;;  # vaxilu 包无 armv7，回退 arm64 由下载失败提示
+    *) echo amd64 ;;
+  esac
+}
+
+find_existing_vaxilu_xray() {
+  local arch
+  arch="$(detect_xui_arch)"
+  local p
+  for p in \
+    "/usr/local/x-ui/bin/xray-linux-${arch}" \
+    "/usr/local/x-ui/bin/xray-linux-amd64" \
+    "/usr/local/x-ui/bin/xray-linux-arm64"; do
+    if [[ -x "${p}" ]]; then
+      echo "${p}"
+      return 0
+    fi
+  done
+  shopt -s nullglob
+  local g
+  for g in /usr/local/x-ui/bin/xray-linux-*; do
+    if [[ -x "${g}" ]]; then
+      echo "${g}"
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  return 1
+}
+
+write_xray_systemd() {
+  local xray_bin="$1"
+  cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Core (socks-agent)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${xray_bin} run -config ${XRAY_CONFIG}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_xray_from_vaxilu_xui() {
+  local arch dest_dir dest_name existing tag url tmp extracted ver
+  arch="$(detect_xui_arch)"
+  dest_dir="${AGENT_HOME}/bin"
+  dest_name="xray-linux-${arch}"
+  dest="${dest_dir}/${dest_name}"
+  mkdir -p "${dest_dir}"
+
+  if existing="$(find_existing_vaxilu_xray)"; then
+    info "复用本机 vaxilu XUI 自带 Xray: ${existing}"
+    cp -f "${existing}" "${dest}"
+    chmod +x "${dest}"
+    for f in geoip.dat geosite.dat; do
+      [[ -f "/usr/local/x-ui/bin/${f}" ]] && cp -f "/usr/local/x-ui/bin/${f}" "${dest_dir}/" || true
+    done
+  else
+    tag="${VAXILU_XUI_TAG}"
+    if [[ -z "${tag}" ]]; then
+      tag="$(curl -fsSL "https://api.github.com/repos/${VAXILU_XUI_REPO}/releases/latest" \
+        | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')" || true
+    fi
+    [[ -n "${tag}" ]] || error "无法获取 vaxilu/x-ui 发布版本"
+    url="https://github.com/${VAXILU_XUI_REPO}/releases/download/${tag}/x-ui-linux-${arch}.tar.gz"
+    info "下载 vaxilu XUI ${tag} 发布包（仅提取 Xray 内核）..."
+    tmp="$(mktemp -d /tmp/xui-xray.XXXXXX)"
+    if ! curl -fsSL "${url}" | tar -xz -C "${tmp}"; then
+      rm -rf "${tmp}"
+      error "下载失败: ${url}"
+    fi
+    extracted="$(find "${tmp}" -type f -name 'xray-linux-*' | head -1)"
+    [[ -n "${extracted}" && -f "${extracted}" ]] || {
+      rm -rf "${tmp}"
+      error "发布包中未找到 xray-linux-* 二进制"
+    }
+    cp -f "${extracted}" "${dest}"
+    chmod +x "${dest}"
+    for f in geoip.dat geosite.dat; do
+      local geo
+      geo="$(find "${tmp}" -name "${f}" | head -1)"
+      [[ -n "${geo}" && -f "${geo}" ]] && cp -f "${geo}" "${dest_dir}/"
+    done
+    rm -rf "${tmp}"
+    info "已从 vaxilu/x-ui ${tag} 提取 Xray → ${dest}"
+  fi
+
+  ln -sf "${dest_name}" "${dest_dir}/xray"
+  ver="$("${dest}" version 2>/dev/null | head -n1 || true)"
+  info "Xray 版本: ${ver:-未知}"
+  echo "${dest}"
+}
+
+install_xray_official() {
+  if [[ ! -x /usr/local/bin/xray ]]; then
+    info "安装 XTLS 官方 Xray-core ..."
+    bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+  else
+    info "已存在官方 Xray: $(/usr/local/bin/xray version 2>/dev/null | head -n1 || true)"
+  fi
+  [[ -x /usr/local/bin/xray ]] || error "Xray 安装失败"
+  echo "/usr/local/bin/xray"
+}
 
 mkdir -p /usr/local/etc/xray
+XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XRAY_SERVICE="xray"
+
+case "${XRAY_KERNEL}" in
+  xui)
+    XRAY_BIN="$(install_xray_from_vaxilu_xui)"
+    write_xray_systemd "${XRAY_BIN}"
+    XRAY_KERNEL_LABEL="vaxilu XUI 内核"
+    ;;
+  official)
+    XRAY_BIN="$(install_xray_official)"
+    XRAY_KERNEL_LABEL="XTLS 官方最新"
+    ;;
+  *)
+    error "未知 XRAY_KERNEL=${XRAY_KERNEL}，可用: xui / official"
+    ;;
+esac
 
 mkdir -p "${AGENT_HOME}/data" "${AGENT_HOME}/agent"
 info "部署 Agent 文件 ..."
@@ -216,20 +430,21 @@ if [[ -f "${ENV_FILE}" ]]; then
   info "沿用已有 Token（${ENV_FILE}）"
 else
   AGENT_API_TOKEN="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  cat > "${ENV_FILE}" <<EOF
+  info "已生成新 API Token"
+fi
+cat > "${ENV_FILE}" <<EOF
 AGENT_LISTEN_HOST=0.0.0.0
 AGENT_LISTEN_PORT=${AGENT_PORT}
 AGENT_API_TOKEN=${AGENT_API_TOKEN}
 AGENT_DATA_DIR=${AGENT_HOME}/data
 AGENT_SHARED_PORT=${SHARED_PORT}
-XRAY_BIN=/usr/local/bin/xray
-XRAY_CONFIG=/usr/local/etc/xray/config.json
+XRAY_BIN=${XRAY_BIN}
+XRAY_CONFIG=${XRAY_CONFIG}
 XRAY_API_ADDR=127.0.0.1:${XRAY_API_PORT}
 XRAY_SERVICE=${XRAY_SERVICE}
+XRAY_KERNEL=${XRAY_KERNEL}
 EOF
-  chmod 600 "${ENV_FILE}"
-  info "已生成新 API Token"
-fi
+chmod 600 "${ENV_FILE}"
 
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
@@ -343,6 +558,8 @@ echo "============================================================"
 echo -e "${GREEN}安装完成${NC}"
 echo "------------------------------------------------------------"
 echo "  面板类型:     agent"
+echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
+echo "  Xray 版本:    $(${XRAY_BIN} version 2>/dev/null | head -n1 || echo 未知)"
 echo "  Agent 地址:   http://${PUBLIC_IP}:${AGENT_LISTEN_PORT:-$AGENT_PORT}"
 echo "  API Token:    ${AGENT_API_TOKEN}"
 echo "  inbound_id:   1   (共享占位，专属模式也填 1)"
@@ -353,4 +570,5 @@ echo "------------------------------------------------------------"
 echo "后台「添加节点」时选「极简 Agent」，把上面几项填进去即可。"
 echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP。"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
+echo "改用官方最新 Xray: XRAY_KERNEL=official bash install.sh"
 echo "============================================================"

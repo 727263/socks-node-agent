@@ -1,28 +1,42 @@
 # SOCKS 极简节点 Agent
 
-在代理 VPS 上直接管控 **Xray**，无需安装 3X-UI。供 [socks5-bot](https://github.com/727263/socks5-bot) 的 `panel_type=agent` 使用。
+在代理 VPS 上直接管控 **Xray**（无需安装 XUI/3X-UI 面板）。供 [socks5-bot](https://github.com/727263/socks5-bot) 的 `panel_type=agent` 使用。
 
-## 一键安装（公开脚本）
+## 一键安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | bash
 ```
 
-自定义端口示例：
+## 选择 Xray 内核
+
+| 方式 | 示例 |
+|------|------|
+| **交互菜单** | 本地执行 `bash install.sh`，按提示选 1 或 2 |
+| **命令行参数** | `bash install.sh --kernel official` |
+| **环境变量** | `XRAY_KERNEL=xui bash install.sh`（`curl \| bash` 时用） |
+| **非交互默认** | `curl ... \| bash` 且未指定 → **vaxilu XUI 内核** |
+
+| 内核 | 说明 |
+|------|------|
+| `xui` | [vaxilu/x-ui](https://github.com/vaxilu/x-ui) 发布包里的 Xray，与旧版 XUI 面板同款，**版本较旧** |
+| `official` | [XTLS/Xray-install](https://github.com/XTLS/Xray-install) 安装的**最新版** Xray |
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh \
-  | AGENT_PORT=9100 SHARED_PORT=1080 bash
+# 交互选择
+bash install.sh
+
+# 指定官方最新
+bash install.sh -k official
+
+# 管道安装指定内核
+curl -fsSL .../install.sh | XRAY_KERNEL=official bash
 ```
 
-安装结束会打印：**Agent 地址、API Token、inbound_id=1、公网 IP、SOCKS 端口**。
+内核文件位置：
 
-## 能力
-
-- 创建 / 删除 SOCKS 入站（专属端口）
-- 共享入站多账号同步
-- 流量上限、到期自动停用
-- 开关入站、重置已用流量
+- `xui` 模式：`/opt/socks-agent/bin/xray-linux-<arch>`
+- `official` 模式：`/usr/local/bin/xray`
 
 ## 在 Bot 后台添加节点
 
@@ -37,33 +51,24 @@ curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/instal
 
 ## 防火墙
 
-安装脚本会自动尝试放行（UFW / firewalld / iptables）：
-
 | 端口 | 默认 | 用途 |
 |------|------|------|
 | Agent API | `9100/tcp` | Bot 调管控接口 |
 | 共享 SOCKS | `1080/tcp` | 共享入站 |
 | 专属端口段 | `20000-65000/tcp` | 每用户独立端口 |
 
-可用环境变量覆盖：`AGENT_PORT` / `SHARED_PORT` / `PORT_RANGE_START` / `PORT_RANGE_END`。  
-跳过防火墙：`SKIP_FIREWALL=1`。
-
-注意：
-
-- **不会**自动 `ufw enable`（避免未放行 SSH 把自己锁死）
-- 云厂商安全组仍需在控制台放行相同端口
-- 更安全：安全组里把 `9100` 只放行 Bot 服务器 IP
+环境变量：`AGENT_PORT` / `SHARED_PORT` / `PORT_RANGE_START` / `PORT_RANGE_END` / `SKIP_FIREWALL=1`
 
 ## 卸载
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/uninstall.sh | bash
-# 同时删数据: curl -fsSL .../uninstall.sh | REMOVE_DATA=1 bash
-# 同时卸 Xray: curl -fsSL .../uninstall.sh | REMOVE_XRAY=1 bash
 ```
 
-或本机已安装时：
+或：
 
 ```bash
 bash /opt/socks-agent/uninstall.sh
 ```
+
+`REMOVE_XRAY=1` 仅对 `XRAY_KERNEL=official` 有效（调用 xray-install remove）；XUI 内核在 `${AGENT_HOME}/bin/`，设 `REMOVE_DATA=1` 一并删除。
