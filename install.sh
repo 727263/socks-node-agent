@@ -35,6 +35,7 @@ XRAY_API_PORT="${XRAY_API_PORT:-10085}"
 AGENT_REPO="${AGENT_REPO:-727263/socks-node-agent}"
 AGENT_REF="${AGENT_REF:-main}"
 SKIP_FIREWALL="${SKIP_FIREWALL:-0}"
+SKIP_BBR="${SKIP_BBR:-0}"
 XRAY_KERNEL="${XRAY_KERNEL:-}"
 VAXILU_XUI_REPO="${VAXILU_XUI_REPO:-vaxilu/x-ui}"
 VAXILU_XUI_TAG="${VAXILU_XUI_TAG:-}"
@@ -48,6 +49,7 @@ usage() {
 
 环境变量:
   XRAY_KERNEL=xui|official      与 --kernel 相同（curl 管道安装时用）
+  SKIP_BBR=1                      跳过 TCP BBR 拥塞控制优化
 
 内核:
   xui       vaxilu 旧版 XUI 发布包 Xray（较旧，与 XUI 面板同款）
@@ -217,6 +219,64 @@ install_os_deps() {
 }
 
 install_os_deps
+
+bbr_active() {
+  sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q '\bbbr\b'
+}
+
+enable_bbr() {
+  if [[ "${SKIP_BBR}" == "1" ]]; then
+    warn "已跳过 BBR 优化（SKIP_BBR=1）"
+    return 0
+  fi
+
+  if bbr_active; then
+    info "BBR 已启用，跳过"
+    return 0
+  fi
+
+  local major minor
+  major="$(uname -r | cut -d. -f1)"
+  minor="$(uname -r | cut -d. -f2)"
+  minor="${minor%%-*}"
+  if [[ "${major}" -lt 4 ]] || { [[ "${major}" -eq 4 ]] && [[ "${minor}" -lt 9 ]]; }; then
+    warn "内核 $(uname -r) 过低（需 >= 4.9），跳过 BBR"
+    return 0
+  fi
+
+  info "启用 TCP BBR 拥塞控制 ..."
+  modprobe tcp_bbr 2>/dev/null || true
+
+  if ! lsmod 2>/dev/null | grep -q tcp_bbr; then
+    if ! modinfo tcp_bbr >/dev/null 2>&1; then
+      warn "tcp_bbr 模块不可用（常见于 OpenVZ 等容器），跳过 BBR"
+      return 0
+    fi
+  fi
+
+  mkdir -p /etc/modules-load.d
+  echo tcp_bbr > /etc/modules-load.d/tcp-bbr.conf
+
+  cat > /etc/sysctl.d/99-socks-agent-bbr.conf <<'EOF'
+# TCP BBR (socks-agent install.sh)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+
+  if sysctl -p /etc/sysctl.d/99-socks-agent-bbr.conf >/dev/null 2>&1; then
+    :
+  elif ! sysctl -w net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1; then
+    warn "BBR sysctl 应用失败，配置已写入 /etc/sysctl.d/99-socks-agent-bbr.conf，重启后可能生效"
+  fi
+
+  if bbr_active; then
+    info "BBR 已启用 (qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo ?))"
+  else
+    warn "BBR 配置已写入，重启后生效"
+  fi
+}
+
+enable_bbr
 
 command -v python3 >/dev/null || error "需要 python3"
 command -v curl >/dev/null || error "需要 curl"
@@ -560,6 +620,7 @@ echo "------------------------------------------------------------"
 echo "  面板类型:     agent"
 echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
 echo "  Xray 版本:    $(${XRAY_BIN} version 2>/dev/null | head -n1 || echo 未知)"
+echo "  TCP 拥塞:     $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 未知)"
 echo "  Agent 地址:   http://${PUBLIC_IP}:${AGENT_LISTEN_PORT:-$AGENT_PORT}"
 echo "  API Token:    ${AGENT_API_TOKEN}"
 echo "  inbound_id:   1   (共享占位，专属模式也填 1)"
@@ -570,5 +631,6 @@ echo "------------------------------------------------------------"
 echo "后台「添加节点」时选「极简 Agent」，把上面几项填进去即可。"
 echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP。"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
+echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
 echo "改用官方最新 Xray: XRAY_KERNEL=official bash install.sh"
 echo "============================================================"

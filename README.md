@@ -59,6 +59,17 @@ curl -fsSL .../install.sh | XRAY_KERNEL=official bash
 
 环境变量：`AGENT_PORT` / `SHARED_PORT` / `PORT_RANGE_START` / `PORT_RANGE_END` / `SKIP_FIREWALL=1`
 
+## TCP BBR
+
+安装脚本会**自动启用 BBR**（内核 >= 4.9 且支持 `tcp_bbr` 模块时）：
+
+- 写入 `/etc/sysctl.d/99-socks-agent-bbr.conf`
+- 开机加载 `tcp_bbr` 模块
+
+已启用 BBR 的系统会跳过。OpenVZ 等无模块的容器环境会自动跳过并提示。
+
+不需要 BBR：`SKIP_BBR=1 bash install.sh`
+
 ## 卸载
 
 ```bash
