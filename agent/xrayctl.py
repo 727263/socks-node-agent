@@ -39,12 +39,15 @@ def inbound_to_xray(inb: dict[str, Any]) -> dict[str, Any]:
     else:
         sniff_obj = sniff or {"enabled": False}
 
+    # listen 必须为 null（与 XUI 一致）：老版 xray(1.4.2) 多个 socks 入站
+    # 都显式绑定 "0.0.0.0" 时账号验证会串台，只有最后一个入站生效。
     return {
         "tag": inb.get("tag") or f"in-{inb['id']}",
-        "listen": "0.0.0.0",
+        "listen": None,
         "port": int(inb["port"]),
         "protocol": inb.get("protocol") or "socks",
         "settings": settings_obj,
+        "streamSettings": {},
         "sniffing": sniff_obj,
     }
 
