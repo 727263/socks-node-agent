@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -106,16 +108,58 @@ class XrayController:
         self.service_name = service_name
         self._api_port = int(api_addr.rsplit(":", 1)[-1])
 
-    def write_config(self, enabled_inbounds: list[dict[str, Any]]) -> None:
+    def write_config(self, enabled_inbounds: list[dict[str, Any]]) -> bool:
+        """写入 Xray 配置；内容无变化返回 False（避免无谓重启）。"""
         cfg = build_full_config(enabled_inbounds, api_port=self._api_port)
+        new_text = json.dumps(cfg, ensure_ascii=False, indent=2)
         path = Path(self.config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path.exists() and path.read_text(encoding="utf-8") == new_text:
+                log.info("xray config unchanged, skip rewrite (%d inbounds)", len(enabled_inbounds))
+                return False
+        except OSError:
+            pass
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(new_text, encoding="utf-8")
         os.replace(tmp, path)
         log.info("Wrote xray config: %s (%d inbounds)", path, len(enabled_inbounds))
+        return True
 
-    def restart_service(self) -> None:
+    def _is_active(self) -> bool:
+        try:
+            r = subprocess.run(
+                ["systemctl", "is-active", self.service_name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            return r.stdout.strip() == "active"
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _wait_ports_ready(self, ports: list[int], timeout: float = 15.0) -> None:
+        """重启后等所有入站端口真正 listen，确保账号已加载再返回。"""
+        pending = {int(p) for p in ports if p}
+        if not pending:
+            return
+        deadline = time.time() + timeout
+        while pending and time.time() < deadline:
+            pending = {p for p in pending if not self._port_open(p)}
+            if pending:
+                time.sleep(0.3)
+        if pending:
+            log.warning("xray ports not ready %.0fs after restart: %s", timeout, sorted(pending))
+        else:
+            log.info("xray all ports ready after restart")
+
+    def restart_service(self, expected_ports: Optional[list[int]] = None) -> None:
         try:
             # 先校验配置，避免写入坏配置后 xray 起不来
             test = subprocess.run(
@@ -139,11 +183,19 @@ class XrayController:
         except Exception as e:  # noqa: BLE001
             log.warning("systemctl restart failed (%s): %s", self.service_name, e)
             raise
+        self._wait_ports_ready(expected_ports or [])
 
     def apply_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
-        """写完整配置并重启 Xray（最可靠，避免热加载丢入站）。"""
-        self.write_config(enabled_inbounds)
-        self.restart_service()
+        """写完整配置并按需重启 Xray（配置未变则不重启，避免重启竞争）。"""
+        changed = self.write_config(enabled_inbounds)
+        ports = [int(i["port"]) for i in enabled_inbounds if i.get("port")]
+        if changed:
+            self.restart_service(expected_ports=ports)
+        elif not self._is_active():
+            log.info("config unchanged but xray inactive, restarting")
+            self.restart_service(expected_ports=ports)
+        else:
+            log.info("config unchanged and xray active, skip restart")
 
     def sync_live_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
         """安装/启动时全量同步。"""
