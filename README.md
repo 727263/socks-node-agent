@@ -38,6 +38,26 @@ curl -fsSL .../install.sh | XRAY_KERNEL=official bash
 - `xui` 模式：`/opt/socks-agent/bin/xray-linux-<arch>`
 - `official` 模式：`/usr/local/bin/xray`
 
+## Web 面板
+
+安装后自带一个轻量 Web 面板，与 API 共用 `9100` 端口：
+
+- 地址：`http://IP:9100/panel`
+- 账号密码：安装结束时打印（`PANEL_USER` 默认 `admin`，`PANEL_PASS` 随机），也存于 `/opt/socks-agent/agent.env`
+
+功能：系统状态（CPU/内存/负载）、xray 状态与版本、账号增删改查、流量统计、xray 版本切换（从官方下载并自动校验回滚）、日志查看、重启 xray/agent、防火墙检查。
+
+| 环境变量 | 说明 |
+|----------|------|
+| `PANEL_ENABLE` | `0` 关闭面板（默认开） |
+| `PANEL_USER` / `PANEL_PASS` | 自定义面板账号密码 |
+| `PANEL_SECRET` | 会话签名密钥（不设则随机，重启后需重新登录） |
+
+注意：
+
+- 面板复用 `9100`，用浏览器访问需在防火墙/安全组放行你的管理 IP。
+- 面板手动增删的账号与 Bot 自动同步共用数据；若 Bot 对本节点做全量同步，手动账号可能被清理，建议仅用于临时/测试。
+
 ## 在 Bot 后台添加节点
 
 1. 面板类型选 **极简 Agent**

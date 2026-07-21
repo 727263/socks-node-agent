@@ -490,15 +490,21 @@ info "Python venv: $(${VENV_PY} --version 2>&1)"
 "${VENV_PY}" -m pip install -U pip wheel >/dev/null 2>&1 || warn "pip 升级失败，继续尝试安装依赖"
 "${VENV_PY}" -m pip install -r "${AGENT_HOME}/requirements.txt"
 
+gen_secret() {
+  openssl rand -hex "${1:-16}" 2>/dev/null || head -c "${1:-16}" /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
 ENV_FILE="${AGENT_HOME}/agent.env"
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
-  info "沿用已有 Token（${ENV_FILE}）"
-else
-  AGENT_API_TOKEN="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  info "已生成新 API Token"
+  info "沿用已有配置（${ENV_FILE}）"
 fi
+# 缺失项才生成，已有值沿用（升级不改 Token / 面板密码）
+AGENT_API_TOKEN="${AGENT_API_TOKEN:-$(gen_secret 24)}"
+PANEL_USER="${PANEL_USER:-admin}"
+PANEL_PASS="${PANEL_PASS:-$(gen_secret 6)}"
+PANEL_SECRET="${PANEL_SECRET:-$(gen_secret 16)}"
 cat > "${ENV_FILE}" <<EOF
 AGENT_LISTEN_HOST=0.0.0.0
 AGENT_LISTEN_PORT=${AGENT_PORT}
@@ -510,6 +516,11 @@ XRAY_CONFIG=${XRAY_CONFIG}
 XRAY_API_ADDR=127.0.0.1:${XRAY_API_PORT}
 XRAY_SERVICE=${XRAY_SERVICE}
 XRAY_KERNEL=${XRAY_KERNEL}
+AGENT_SERVICE=socks-agent
+PANEL_ENABLE=1
+PANEL_USER=${PANEL_USER}
+PANEL_PASS=${PANEL_PASS}
+PANEL_SECRET=${PANEL_SECRET}
 EOF
 chmod 600 "${ENV_FILE}"
 
@@ -635,8 +646,13 @@ echo "  公网 IP:      ${PUBLIC_IP}"
 echo "  SOCKS 端口:   ${AGENT_SHARED_PORT:-$SHARED_PORT}  (节点「SOCKS 端口」填这个)"
 echo "  已尝试放行:   ${AGENT_PORT}(API) / ${SHARED_PORT}(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}(专属)"
 echo "------------------------------------------------------------"
+echo -e "  ${GREEN}Web 面板:     http://${PUBLIC_IP}:${AGENT_PORT}/panel${NC}"
+echo "  面板账号:     ${PANEL_USER}"
+echo "  面板密码:     ${PANEL_PASS}"
+echo "------------------------------------------------------------"
 echo "后台「添加节点」时选「极简 Agent」，把上面几项填进去即可。"
-echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP。"
+echo "面板与 API 共用 ${AGENT_PORT} 端口；用浏览器访问面板需放行你的 IP。"
+echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP + 你的管理 IP。"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
 echo "改用官方最新 Xray: XRAY_KERNEL=official bash install.sh"

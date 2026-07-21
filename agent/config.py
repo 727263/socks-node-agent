@@ -19,6 +19,19 @@ class AgentConfig:
     shared_port: int = 1080
     traffic_sync_seconds: int = 20
     enforce_seconds: int = 30
+    # Web 面板
+    panel_enable: bool = True
+    panel_user: str = ""
+    panel_pass: str = ""
+    panel_secret: str = ""
+    agent_service: str = "socks-agent"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_config() -> AgentConfig:
@@ -34,4 +47,9 @@ def load_config() -> AgentConfig:
         shared_port=int(os.getenv("AGENT_SHARED_PORT", "1080")),
         traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "20")),
         enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "30")),
+        panel_enable=_env_bool("PANEL_ENABLE", True),
+        panel_user=os.getenv("PANEL_USER", "").strip(),
+        panel_pass=os.getenv("PANEL_PASS", "").strip(),
+        panel_secret=os.getenv("PANEL_SECRET", "").strip(),
+        agent_service=os.getenv("AGENT_SERVICE", "socks-agent"),
     )

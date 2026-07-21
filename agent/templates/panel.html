@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SOCKS 节点面板</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #f4f6fa; color: #2d3748; font-size: 14px; }
+    .topbar { background: #fff; padding: 14px 24px; display: flex; justify-content: space-between;
+      align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); position: sticky; top: 0; z-index: 10; }
+    .topbar h1 { font-size: 17px; color: #333; }
+    .topbar .right { display: flex; align-items: center; gap: 14px; color: #666; font-size: 13px; }
+    .container { max-width: 1180px; margin: 20px auto; padding: 0 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; margin-bottom: 20px; }
+    .card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+    .card .k { color: #999; font-size: 12px; margin-bottom: 8px; }
+    .card .v { font-size: 20px; font-weight: 600; color: #2d3748; }
+    .card .v small { font-size: 12px; color: #999; font-weight: 400; }
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; }
+    .badge.ok { background: #c6f6d5; color: #22543d; }
+    .badge.bad { background: #fed7d7; color: #742a2a; }
+    .panel { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05); margin-bottom: 20px; }
+    .panel h2 { font-size: 15px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #edf2f7; font-size: 13px; }
+    th { color: #999; font-weight: 500; }
+    td .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    button { border: none; border-radius: 7px; padding: 7px 13px; font-size: 13px; cursor: pointer; transition: .15s; }
+    .btn-primary { background: #667eea; color: #fff; } .btn-primary:hover { background: #5568d3; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-gray { background: #edf2f7; color: #4a5568; } .btn-gray:hover { background: #e2e8f0; }
+    .btn-danger { background: #fed7d7; color: #c53030; } .btn-danger:hover { background: #feb2b2; }
+    .ops { display: flex; gap: 10px; flex-wrap: wrap; }
+    .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+    .switch input { display: none; }
+    .slider { position: absolute; cursor: pointer; inset: 0; background: #cbd5e0; border-radius: 22px; transition: .2s; }
+    .slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+    input:checked + .slider { background: #48bb78; }
+    input:checked + .slider:before { transform: translateX(18px); }
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .overlay.show { display: flex; }
+    .modal { background: #fff; border-radius: 14px; padding: 24px; width: 420px; max-width: 92vw; max-height: 86vh; overflow: auto; }
+    .modal h3 { font-size: 16px; margin-bottom: 16px; }
+    .modal label { display: block; font-size: 13px; color: #555; margin: 12px 0 5px; }
+    .modal input { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 7px; font-size: 14px; }
+    .modal .row { display: flex; gap: 12px; } .modal .row > div { flex: 1; }
+    .modal .actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; }
+    .verlist { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 8px; }
+    .verlist button { background: #edf2f7; color: #2d3748; }
+    .verlist button.pre { background: #fefcbf; }
+    .verlist button:hover { background: #667eea; color: #fff; }
+    pre.log { background: #1a202c; color: #cbd5e0; padding: 14px; border-radius: 8px; font-size: 12px;
+      max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+    .tabs { display: flex; gap: 8px; } .tabs button.active { background: #667eea; color: #fff; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2d3748;
+      color: #fff; padding: 11px 20px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .3s; z-index: 200; }
+    .toast.show { opacity: 1; }
+    .muted { color: #a0aec0; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>SOCKS 节点面板</h1>
+    <div class="right">
+      <span id="who">{{ user }}</span>
+      <button class="btn-gray btn-sm" onclick="logout()">登出</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="cards" id="cards"></div>
+
+    <div class="panel">
+      <h2>Xray 内核
+        <button class="btn-gray btn-sm" onclick="openVersions()">切换版本</button>
+      </h2>
+      <div id="xrayInfo" class="muted">加载中...</div>
+    </div>
+
+    <div class="panel">
+      <h2>账号 / 入站
+        <button class="btn-primary btn-sm" onclick="openAdd()">+ 新增账号</button>
+      </h2>
+      <table>
+        <thead><tr>
+          <th>端口</th><th>用户名</th><th>密码</th><th>已用 / 总量</th><th>到期</th><th>启用</th><th>操作</th>
+        </tr></thead>
+        <tbody id="inbList"></tbody>
+      </table>
+      <div class="muted" style="margin-top:10px">提示：手动增删的账号与 Bot 自动同步共用数据；若 Bot 对本节点做全量同步，手动账号可能被清理，建议仅用于临时/测试。</div>
+    </div>
+
+    <div class="panel">
+      <h2>日志
+        <span class="tabs">
+          <button class="btn-gray btn-sm active" id="tab-xray" onclick="loadLog('xray')">xray</button>
+          <button class="btn-gray btn-sm" id="tab-agent" onclick="loadLog('agent')">agent</button>
+          <button class="btn-gray btn-sm" onclick="loadLog(curLog)">刷新</button>
+        </span>
+      </h2>
+      <pre class="log" id="logBox">点击上方标签加载日志...</pre>
+    </div>
+
+    <div class="panel">
+      <h2>运维操作</h2>
+      <div class="ops">
+        <button class="btn-gray" onclick="ops('restart-xray','重启 xray')">重启 xray</button>
+        <button class="btn-gray" onclick="ops('reload','重载配置')">从数据库重载</button>
+        <button class="btn-gray" onclick="ops('restart-agent','重启 agent')">重启 agent</button>
+        <button class="btn-gray" onclick="firewall()">防火墙检查</button>
+      </div>
+      <div id="fwResult" class="muted" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <!-- 账号编辑模态 -->
+  <div class="overlay" id="inbModal">
+    <div class="modal">
+      <h3 id="inbTitle">新增账号</h3>
+      <input type="hidden" id="f_id">
+      <div class="row">
+        <div><label>端口</label><input id="f_port" type="number" placeholder="如 20647"></div>
+        <div><label>流量上限 (GB, 0=不限)</label><input id="f_total" type="number" step="0.1" value="0"></div>
+      </div>
+      <div class="row">
+        <div><label>用户名</label><input id="f_user" placeholder="留空=不改"></div>
+        <div><label>密码</label><input id="f_pass" placeholder="留空=不改"></div>
+      </div>
+      <label>有效天数 (从现在起, 0=永久)</label>
+      <input id="f_days" type="number" value="0">
+      <div class="actions">
+        <button class="btn-gray" onclick="closeModal('inbModal')">取消</button>
+        <button class="btn-primary" onclick="saveInbound()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 版本切换模态 -->
+  <div class="overlay" id="verModal">
+    <div class="modal">
+      <h3>切换 Xray 版本</h3>
+      <div class="muted">当前：<span id="curVer">-</span>。点击版本下载并切换（自动校验，失败回滚）。绿色=正式版，黄色=预发布。</div>
+      <div class="verlist" id="verList" style="margin-top:12px">加载中...</div>
+      <div class="actions"><button class="btn-gray" onclick="closeModal('verModal')">关闭</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let curLog = 'xray';
+
+function toast(msg) { const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600); }
+function fmtBytes(n) { n=Number(n||0); if(n<1024) return n+' B'; const u=['KB','MB','GB','TB']; let i=-1; do{n/=1024;i++;}while(n>=1024&&i<u.length-1); return n.toFixed(2)+' '+u[i]; }
+function fmtExpiry(ms) { ms=Number(ms||0); if(!ms) return '永久'; const d=new Date(ms); const now=Date.now(); const left=Math.ceil((ms-now)/86400000); return d.toLocaleDateString('zh-CN')+(left>0?` (剩${left}天)`:' (已过期)'); }
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (r.status===401) { location.href='/panel/login'; throw new Error('未登录'); }
+  return r.json();
+}
+
+async function loadOverview() {
+  try {
+    const j = await api('/panel/api/overview');
+    if (!j.success) return;
+    const o = j.obj;
+    $('cards').innerHTML = `
+      <div class="card"><div class="k">CPU</div><div class="v">${o.cpu.percent}% <small>/ ${o.cpu.count} 核</small></div></div>
+      <div class="card"><div class="k">内存</div><div class="v">${o.mem.percent}% <small>${fmtBytes(o.mem.used)}/${fmtBytes(o.mem.total)}</small></div></div>
+      <div class="card"><div class="k">负载 (1/5/15)</div><div class="v" style="font-size:16px">${o.load.map(x=>x.toFixed(2)).join(' / ')}</div></div>
+      <div class="card"><div class="k">Xray</div><div class="v"><span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span> <small>${o.xray.version||'-'}</small></div></div>
+      <div class="card"><div class="k">Xray 运行</div><div class="v" style="font-size:16px">${o.xray.uptime_h}</div></div>
+      <div class="card"><div class="k">入站数</div><div class="v">${o.inbound_count}</div></div>`;
+    $('xrayInfo').innerHTML = `版本 <b>${o.xray.version||'未知'}</b>，状态 <span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span>，运行 ${o.xray.uptime_h}；Agent <span class="badge ${o.agent.status==='active'?'ok':'bad'}">${o.agent.status}</span> 运行 ${o.agent.uptime_h}`;
+  } catch(e) {}
+}
+
+async function loadInbounds() {
+  const j = await api('/panel/api/inbounds');
+  if (!j.success) return;
+  const rows = j.obj.map(inb => {
+    let user='-', pass='-';
+    try { const s=JSON.parse(inb.settings||'{}'); const a=(s.accounts||[])[0]; if(a){user=a.user;pass=a.pass;} } catch(e){}
+    const shared = inb.id===1;
+    const used = Number(inb.up||0)+Number(inb.down||0);
+    const total = Number(inb.total||0);
+    return `<tr>
+      <td class="mono">${inb.port}${shared?' <span class="muted">(共享)</span>':''}</td>
+      <td class="mono">${user}</td>
+      <td class="mono">${pass}</td>
+      <td>${fmtBytes(used)} / ${total?fmtBytes(total):'不限'}</td>
+      <td>${fmtExpiry(inb.expiryTime)}</td>
+      <td><label class="switch"><input type="checkbox" ${inb.enable?'checked':''} onchange="toggle(${inb.id},this.checked)"><span class="slider"></span></label></td>
+      <td>
+        <button class="btn-gray btn-sm" onclick='openEdit(${JSON.stringify(inb)})'>编辑</button>
+        ${shared?'':`<button class="btn-danger btn-sm" onclick="delInbound(${inb.id},${inb.port})">删除</button>`}
+      </td></tr>`;
+  }).join('');
+  $('inbList').innerHTML = rows || '<tr><td colspan="7" class="muted">暂无账号</td></tr>';
+}
+
+function openAdd() {
+  $('inbTitle').textContent='新增账号'; $('f_id').value=''; $('f_port').value=''; $('f_port').disabled=false;
+  $('f_total').value='0'; $('f_user').value=''; $('f_pass').value=''; $('f_days').value='0';
+  $('f_user').placeholder='必填'; $('f_pass').placeholder='必填';
+  $('inbModal').classList.add('show');
+}
+function openEdit(inb) {
+  $('inbTitle').textContent='编辑账号 #'+inb.id; $('f_id').value=inb.id;
+  $('f_port').value=inb.port; $('f_port').disabled=(inb.id===1);
+  $('f_total').value=(Number(inb.total||0)/1073741824)||0;
+  $('f_user').value=''; $('f_pass').value=''; $('f_user').placeholder='留空=不改'; $('f_pass').placeholder='留空=不改';
+  $('f_days').value=0;
+  $('inbModal').classList.add('show');
+}
+function closeModal(id){ $(id).classList.remove('show'); }
+
+async function saveInbound() {
+  const id=$('f_id').value;
+  const body={ port:Number($('f_port').value), total_gb:Number($('f_total').value||0),
+    user:$('f_user').value.trim(), pass:$('f_pass').value.trim(), expiry_days:Number($('f_days').value||0) };
+  let url='/panel/api/inbounds', j;
+  if(id){ url='/panel/api/inbounds/'+id; }
+  j = await api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(j.success){ toast('已保存'); closeModal('inbModal'); loadInbounds(); loadOverview(); }
+  else toast('失败: '+j.msg);
+}
+async function toggle(id, en) {
+  const j = await api('/panel/api/inbounds/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enable:en})});
+  if(j.success) toast(en?'已启用':'已停用'); else { toast('失败: '+j.msg); loadInbounds(); }
+}
+async function delInbound(id, port) {
+  if(!confirm('确认删除端口 '+port+' 的账号？')) return;
+  const j = await api('/panel/api/inbounds/'+id+'/del', {method:'POST'});
+  if(j.success){ toast('已删除'); loadInbounds(); loadOverview(); } else toast('失败: '+j.msg);
+}
+
+async function loadLog(svc) {
+  curLog=svc;
+  $('tab-xray').classList.toggle('active', svc==='xray');
+  $('tab-agent').classList.toggle('active', svc==='agent');
+  $('logBox').textContent='加载中...';
+  const j = await api('/panel/api/logs?service='+svc+'&lines=150');
+  $('logBox').textContent = j.success ? (j.obj.text||'(空)') : ('失败: '+j.msg);
+  $('logBox').scrollTop = $('logBox').scrollHeight;
+}
+
+async function openVersions() {
+  $('verModal').classList.add('show'); $('verList').textContent='加载中...';
+  const j = await api('/panel/api/xray/versions');
+  if(!j.success){ $('verList').textContent='失败: '+j.msg; return; }
+  $('curVer').textContent = j.obj.current||'未知';
+  $('verList').innerHTML = j.obj.versions.map(v =>
+    `<button class="${v.prerelease?'pre':''}" onclick="switchVer('${v.tag}')">${v.tag}</button>`).join('');
+}
+async function switchVer(tag) {
+  if(!confirm('切换到 '+tag+' ？将下载并重启 xray，失败会自动回滚。')) return;
+  toast('正在切换到 '+tag+' ...');
+  const j = await api('/panel/api/xray/switch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tag})});
+  if(j.success){ toast('已切换: '+tag); closeModal('verModal'); loadOverview(); } else toast('失败: '+j.msg);
+}
+
+async function ops(action, name) {
+  if(!confirm('确认执行：'+name+'？')) return;
+  const j = await api('/panel/api/ops/'+action, {method:'POST'});
+  toast(j.success ? j.msg : ('失败: '+j.msg));
+  setTimeout(loadOverview, 1500);
+}
+async function firewall() {
+  $('fwResult').textContent='检查中...';
+  const j = await api('/panel/api/ops/firewall-check', {method:'POST'});
+  if(!j.success){ $('fwResult').textContent='失败: '+j.msg; return; }
+  const o=j.obj; const ports=Object.entries(o.ports_listening).map(([p,v])=>`${p}:${v?'✓':'✗'}`).join('  ');
+  $('fwResult').innerHTML = '端口监听: '+ports+'<br>'+o.firewall;
+}
+
+async function logout() { await api('/panel/logout',{method:'POST'}); location.href='/panel/login'; }
+
+loadOverview(); loadInbounds();
+setInterval(loadOverview, 6000);
+</script>
+</body>
+</html>

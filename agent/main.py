@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -11,6 +13,7 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 from .config import AgentConfig, load_config
 from .store import InboundStore
@@ -187,6 +190,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SOCKS Node Agent", lifespan=lifespan)
+
+# 面板会话密钥：优先用 env 的 PANEL_SECRET（重启后会话不失效），否则随机
+_session_secret = os.getenv("PANEL_SECRET", "").strip() or secrets.token_hex(16)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret,
+    session_cookie="agent_panel",
+    max_age=7 * 86400,
+    same_site="lax",
+    https_only=False,
+)
+
+from . import panel  # noqa: E402  (在 app 定义后导入，避免循环)
+
+app.include_router(panel.router)
 
 
 def require_token(
