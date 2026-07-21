@@ -338,7 +338,7 @@ EOF
 }
 
 install_xray_from_vaxilu_xui() {
-  local arch dest_dir dest_name existing tag url tmp extracted ver
+  local arch dest_dir dest_name existing tag url tmp extracted ver dest
   arch="$(detect_xui_arch)"
   dest_dir="${AGENT_HOME}/bin"
   dest_name="xray-linux-${arch}"
@@ -385,7 +385,7 @@ install_xray_from_vaxilu_xui() {
   ln -sf "${dest_name}" "${dest_dir}/xray"
   ver="$("${dest}" version 2>/dev/null | head -n1 || true)"
   info "Xray 版本: ${ver:-未知}"
-  echo "${dest}"
+  XRAY_BIN="${dest}"
 }
 
 install_xray_official() {
@@ -396,7 +396,12 @@ install_xray_official() {
     info "已存在官方 Xray: $(/usr/local/bin/xray version 2>/dev/null | head -n1 || true)"
   fi
   [[ -x /usr/local/bin/xray ]] || error "Xray 安装失败"
-  echo "/usr/local/bin/xray"
+  XRAY_BIN="/usr/local/bin/xray"
+}
+
+assert_xray_bin() {
+  [[ -n "${XRAY_BIN}" && "${XRAY_BIN}" == /* && -x "${XRAY_BIN}" ]] \
+    || error "Xray 可执行文件无效: ${XRAY_BIN:-<空>}"
 }
 
 mkdir -p /usr/local/etc/xray
@@ -405,12 +410,14 @@ XRAY_SERVICE="xray"
 
 case "${XRAY_KERNEL}" in
   xui)
-    XRAY_BIN="$(install_xray_from_vaxilu_xui)"
+    install_xray_from_vaxilu_xui
+    assert_xray_bin
     write_xray_systemd "${XRAY_BIN}"
     XRAY_KERNEL_LABEL="vaxilu XUI 内核"
     ;;
   official)
-    XRAY_BIN="$(install_xray_official)"
+    install_xray_official
+    assert_xray_bin
     XRAY_KERNEL_LABEL="XTLS 官方最新"
     ;;
   *)
