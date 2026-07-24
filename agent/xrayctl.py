@@ -202,7 +202,16 @@ class XrayController:
             log.info("config unchanged but xray inactive, restarting")
             self.restart_service(expected_ports=ports)
         else:
-            log.info("config unchanged and xray active, skip restart")
+            # 配置未变但运行态可能丢入站（热加载假成功）：缺端口则强制重启
+            missing = [p for p in ports if not self._port_open(p)]
+            if missing:
+                log.warning(
+                    "config unchanged but ports not listening %s, force restart",
+                    missing,
+                )
+                self.restart_service(expected_ports=ports)
+            else:
+                log.info("config unchanged and xray active, skip restart")
 
     def sync_live_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
         """安装/启动时全量同步。"""
@@ -239,8 +248,12 @@ class XrayController:
                 r = self._run_api([sub, tmp_path])
                 if r.returncode == 0:
                     log.info("xray api %s ok tag=%s", sub, payload["tag"])
-                    if wait_port:
-                        self.wait_port_ready(int(payload.get("port") or 0))
+                    port = int(payload.get("port") or 0)
+                    if wait_port and port and not self.wait_port_ready(port):
+                        # adi 返回 0 但端口未监听 → 视为失败，触发上层全量重启
+                        raise RuntimeError(
+                            f"xray api {sub} ok but port {port} not listening"
+                        )
                     return
                 last = r
             raise RuntimeError(
