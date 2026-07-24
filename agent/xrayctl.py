@@ -14,7 +14,7 @@ from typing import Any, Optional
 log = logging.getLogger("socks-agent.xray")
 
 
-def inbound_to_xray(inb: dict[str, Any]) -> dict[str, Any]:
+def inbound_to_xray(inb: dict[str, Any], *, for_api: bool = False) -> dict[str, Any]:
     settings = inb.get("settings", "{}")
     if isinstance(settings, str):
         try:
@@ -39,17 +39,19 @@ def inbound_to_xray(inb: dict[str, Any]) -> dict[str, Any]:
     else:
         sniff_obj = sniff or {"enabled": False}
 
-    # listen 必须为 null（与 XUI 一致）：老版 xray(1.4.2) 多个 socks 入站
-    # 都显式绑定 "0.0.0.0" 时账号验证会串台，只有最后一个入站生效。
-    return {
+    out: dict[str, Any] = {
         "tag": inb.get("tag") or f"in-{inb['id']}",
-        "listen": None,
         "port": int(inb["port"]),
         "protocol": inb.get("protocol") or "socks",
         "settings": settings_obj,
         "streamSettings": {},
         "sniffing": sniff_obj,
     }
+    # 全量 config：listen=null（兼容老 XUI 内核多 socks 串台问题）。
+    # 热加载 adi：不要写 null，省略字段让 xray 默认 0.0.0.0（与 3X-UI 行为一致）。
+    if not for_api:
+        out["listen"] = None
+    return out
 
 
 def build_full_config(enabled_inbounds: list[dict[str, Any]], api_port: int = 10085) -> dict:
@@ -192,30 +194,36 @@ class XrayController:
             raise
         self._wait_ports_ready(expected_ports or [])
 
-    def apply_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
-        """写完整配置并按需重启 Xray（配置未变则不重启，避免重启竞争）。"""
+    def apply_from_store(
+        self, enabled_inbounds: list[dict[str, Any]], *, force_restart: bool = False
+    ) -> None:
+        """写完整配置并按需重启 Xray。
+
+        force_restart=True：即使用户点「全量重载」或热加载失败回退，也强制 restart。
+        """
         changed = self.write_config(enabled_inbounds)
         ports = [int(i["port"]) for i in enabled_inbounds if i.get("port")]
-        if changed:
+        if force_restart or changed:
             self.restart_service(expected_ports=ports)
-        elif not self._is_active():
+            return
+        if not self._is_active():
             log.info("config unchanged but xray inactive, restarting")
             self.restart_service(expected_ports=ports)
+            return
+        # 配置未变但运行态可能丢入站（热加载假成功）：缺端口则强制重启
+        missing = [p for p in ports if not self._port_open(p)]
+        if missing:
+            log.warning(
+                "config unchanged but ports not listening %s, force restart",
+                missing,
+            )
+            self.restart_service(expected_ports=ports)
         else:
-            # 配置未变但运行态可能丢入站（热加载假成功）：缺端口则强制重启
-            missing = [p for p in ports if not self._port_open(p)]
-            if missing:
-                log.warning(
-                    "config unchanged but ports not listening %s, force restart",
-                    missing,
-                )
-                self.restart_service(expected_ports=ports)
-            else:
-                log.info("config unchanged and xray active, skip restart")
+            log.info("config unchanged and xray active, skip restart")
 
     def sync_live_from_store(self, enabled_inbounds: list[dict[str, Any]]) -> None:
         """安装/启动时全量同步。"""
-        self.apply_from_store(enabled_inbounds)
+        self.apply_from_store(enabled_inbounds, force_restart=True)
 
     def _run_api(self, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
         cmd = [self.xray_bin, "api", *args, f"--server={self.api_addr}"]
@@ -223,7 +231,7 @@ class XrayController:
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
 
-    def wait_port_ready(self, port: int, timeout: float = 3.0) -> bool:
+    def wait_port_ready(self, port: int, timeout: float = 5.0) -> bool:
         """热加载后短等端口就绪；超时只返回 False，不抛异常。"""
         if not port:
             return True
@@ -236,29 +244,31 @@ class XrayController:
         return False
 
     def add_inbound_live(self, inb: dict[str, Any], *, wait_port: bool = True) -> None:
-        payload = inbound_to_xray(inb)
+        """通过 xray api adi 热加入站（与 3X-UI HandlerService.AddInbound 同类）。"""
+        payload = inbound_to_xray(inb, for_api=True)
         with tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False, encoding="utf-8"
         ) as f:
             json.dump(payload, f, ensure_ascii=False)
             tmp_path = f.name
         try:
-            # 兼容不同 xray 版本的子命令：adi / adu
-            for sub in ("adi", "adu"):
-                r = self._run_api([sub, tmp_path])
-                if r.returncode == 0:
-                    log.info("xray api %s ok tag=%s", sub, payload["tag"])
-                    port = int(payload.get("port") or 0)
-                    if wait_port and port and not self.wait_port_ready(port):
-                        # adi 返回 0 但端口未监听 → 视为失败，触发上层全量重启
-                        raise RuntimeError(
-                            f"xray api {sub} ok but port {port} not listening"
-                        )
-                    return
-                last = r
-            raise RuntimeError(
-                f"xray api add inbound failed: {(last.stderr or last.stdout or '').strip()}"
-            )
+            r = self._run_api(["adi", tmp_path])
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            if r.returncode != 0:
+                raise RuntimeError(f"xray api adi failed: {out or r.returncode}")
+            log.info("xray api adi ok tag=%s port=%s", payload["tag"], payload.get("port"))
+            if out:
+                log.debug("xray api adi output: %s", out[:500])
+            port = int(payload.get("port") or 0)
+            if wait_port and port and not self.wait_port_ready(port):
+                # 假成功：API 返回 0 但未监听 → 清掉半状态，交给上层强制重启
+                try:
+                    self.remove_inbound_live(str(payload["tag"]))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("cleanup after adi port miss: %s", e)
+                raise RuntimeError(
+                    f"xray api adi ok but port {port} not listening"
+                )
         finally:
             try:
                 os.unlink(tmp_path)

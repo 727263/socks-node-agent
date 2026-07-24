@@ -410,8 +410,8 @@ def api_ops(action: str, request: Request):
             return _ok(msg="xray 已重启")
         if action == "reload":
             with m._ops_lock:
-                m._apply_xray()
-            return _ok(msg="已从数据库重载配置")
+                m._apply_xray(force_restart=True)
+            return _ok(msg="已从数据库强制重载并重启 xray")
         if action == "restart-agent":
             # 延迟重启，先把响应返回
             subprocess.Popen(

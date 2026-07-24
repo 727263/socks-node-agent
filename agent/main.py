@@ -129,12 +129,15 @@ def _xray_fields_changed(old: dict, fields: dict) -> bool:
     return False
 
 
-def _apply_xray() -> None:
-    """写完整 Xray 配置并重启（热加载失败时的兜底）。"""
+def _apply_xray(*, force_restart: bool = False) -> None:
+    """写完整 Xray 配置并重启（热加载失败 / 面板全量重载时的兜底）。"""
     enabled = _enabled_list()
-    xray.apply_from_store(enabled)
+    xray.apply_from_store(enabled, force_restart=force_restart)
     ports = sorted({int(i["port"]) for i in enabled if i.get("port")})
-    log.info("Xray reloaded: %d inbounds, ports=%s", len(enabled), ports)
+    log.info(
+        "Xray reloaded: %d inbounds, ports=%s force=%s",
+        len(enabled), ports, force_restart,
+    )
 
 
 def _sync_config_disk() -> None:
@@ -145,7 +148,7 @@ def _sync_config_disk() -> None:
 def _apply_live_or_restart(*, add: Optional[dict] = None, remove_tag: Optional[str] = None,
                           replace_old_tag: Optional[str] = None, replace_inb: Optional[dict] = None,
                           ) -> None:
-    """先写盘，再尝试热加载；失败则全量重启。"""
+    """先写盘，再尝试热加载；失败则强制全量重启。"""
     _sync_config_disk()
     try:
         if replace_inb is not None and replace_old_tag is not None:
@@ -158,7 +161,8 @@ def _apply_live_or_restart(*, add: Optional[dict] = None, remove_tag: Optional[s
         return
     except Exception as e:  # noqa: BLE001
         log.warning("xray live apply failed, fallback restart: %s", e)
-    _apply_xray()
+    # 配置刚写过，不 force 会因「未变化」跳过重启（这正是全量重载无效的原因）
+    _apply_xray(force_restart=True)
 
 
 def _persist_add(inb: dict) -> None:
@@ -585,10 +589,10 @@ def del_inbound(inbound_id: int):
 
 @app.post("/api/xray/reload", dependencies=[Depends(require_token)])
 def reload_xray():
-    """全量从 DB 重写 Xray 配置并重启（迁移/同步后修复用）。"""
+    """全量从 DB 重写 Xray 配置并强制重启（迁移/同步后修复用）。"""
     try:
         with _ops_lock:
-            _apply_xray()
+            _apply_xray(force_restart=True)
         return ok({"inbounds": len(_enabled_list())})
     except Exception as e:  # noqa: BLE001
         log.exception("reload xray failed")
