@@ -11,6 +11,9 @@ log = logging.getLogger("socks-agent.settings")
 _DEFAULTS: dict[str, Any] = {
     "public_ip": "",
     "shared_seeded": False,
+    # 面板登录覆盖（空=沿用环境变量 PANEL_USER / PANEL_PASS）
+    "panel_user": "",
+    "panel_pass": "",
 }
 
 

@@ -202,10 +202,23 @@
         <input id="set_public_ip" placeholder="如 1.2.3.4" style="width:220px">
         <button class="btn-primary btn-sm" onclick="saveSettings()">保存</button>
       </div>
+
+      <h2 style="margin-top:28px">修改后台登录密码</h2>
+      <label class="muted" style="display:block;margin-bottom:6px">当前密码</label>
+      <input id="pw_current" type="password" autocomplete="current-password" style="width:260px;max-width:100%">
+      <label class="muted" style="display:block;margin:12px 0 6px">新密码（至少 6 位）</label>
+      <input id="pw_new" type="password" autocomplete="new-password" style="width:260px;max-width:100%">
+      <label class="muted" style="display:block;margin:12px 0 6px">确认新密码</label>
+      <input id="pw_confirm" type="password" autocomplete="new-password" style="width:260px;max-width:100%">
+      <div class="toolbar" style="margin-top:12px">
+        <button class="btn-primary btn-sm" onclick="changePassword()">修改密码</button>
+      </div>
+
       <div class="hint" style="margin-top:12px">
         独立使用只需本面板；对接机器人时再把 API Token 填到 Bot 后台即可，两边共用同一套账号库。
         首次启动若共享端口无账号，会自动生成一组，见服务器
         <span class="mono">/opt/socks-agent/data/SHARED_SOCKS.txt</span>。
+        修改密码后写入本机设置，并尽量同步 <span class="mono">agent.env</span>。
       </div>
     </section>
   </div>
@@ -505,6 +518,26 @@ async function saveSettings() {
     loadOverview();
     renderInbounds();
   } else toast('失败: ' + j.msg);
+}
+
+async function changePassword() {
+  const current = $('pw_current').value;
+  const new_password = $('pw_new').value;
+  const confirmPw = $('pw_confirm').value;
+  if (!current || !new_password) { toast('请填写完整'); return; }
+  if (new_password.length < 6) { toast('新密码至少 6 位'); return; }
+  if (new_password !== confirmPw) { toast('两次新密码不一致'); return; }
+  if (!window.confirm('确认修改后台登录密码？修改后需用新密码重新登录。')) return;
+  const j = await api('/panel/api/change-password', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current, new_password, confirm: confirmPw }),
+  });
+  if (!j.success) { toast('失败: ' + j.msg); return; }
+  toast(j.msg || '密码已修改');
+  $('pw_current').value = '';
+  $('pw_new').value = '';
+  $('pw_confirm').value = '';
+  setTimeout(() => { location.href = '/panel/login'; }, 800);
 }
 
 async function logout() {

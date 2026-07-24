@@ -355,6 +355,42 @@ def resolve_public_ip() -> str:
     return (cfg.public_ip or "").strip()
 
 
+def panel_credentials() -> tuple[str, str]:
+    """面板登录账号：优先 settings.json 覆盖，否则 agent.env / 环境变量。"""
+    user = (local_settings.get("panel_user") or "").strip() or (cfg.panel_user or "").strip()
+    pw = (local_settings.get("panel_pass") or "").strip() or (cfg.panel_pass or "").strip()
+    return user, pw
+
+
+def update_panel_password(new_pass: str) -> None:
+    """写入 settings.json，并尽量同步 agent.env 的 PANEL_PASS（重启后仍生效）。"""
+    new_pass = (new_pass or "").strip()
+    if not new_pass:
+        raise ValueError("新密码不能为空")
+    local_settings.set("panel_pass", new_pass)
+    env_path = Path(cfg.data_dir).parent / "agent.env"
+    if not env_path.is_file():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        out: list[str] = []
+        found = False
+        for line in lines:
+            if line.startswith("PANEL_PASS="):
+                out.append(f"PANEL_PASS={new_pass}")
+                found = True
+            else:
+                out.append(line)
+        if not found:
+            out.append(f"PANEL_PASS={new_pass}")
+        tmp = env_path.with_suffix(".tmp")
+        tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+        tmp.replace(env_path)
+        log.info("Updated PANEL_PASS in %s", env_path)
+    except OSError as e:
+        log.warning("update agent.env PANEL_PASS failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global cfg, store, xray, local_settings

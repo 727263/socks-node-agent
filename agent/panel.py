@@ -55,15 +55,23 @@ def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": ""})
 
 
+def _cred_eq(a: str, b: str) -> bool:
+    a = a or ""
+    b = b or ""
+    if len(a) != len(b):
+        return False
+    return hmac.compare_digest(a, b)
+
+
 @router.post("/panel/login", response_class=HTMLResponse)
 async def do_login(request: Request):
     form = await request.form()
     user = (form.get("username") or "").strip()
     pw = (form.get("password") or "").strip()
-    cfg = _main().cfg
-    ok_user = hmac.compare_digest(user, cfg.panel_user or "")
-    ok_pass = hmac.compare_digest(pw, cfg.panel_pass or "")
-    if not (cfg.panel_user and cfg.panel_pass and ok_user and ok_pass):
+    expect_user, expect_pass = _main().panel_credentials()
+    ok_user = _cred_eq(user, expect_user)
+    ok_pass = _cred_eq(pw, expect_pass)
+    if not (expect_user and expect_pass and ok_user and ok_pass):
         return templates.TemplateResponse(
             "login.html", {"request": request, "error": "用户名或密码错误"}, status_code=401
         )
@@ -135,6 +143,34 @@ async def api_set_settings(request: Request):
         "shared_port": m.cfg.shared_port,
         "listen_port": m.cfg.listen_port,
     }, msg="已保存")
+
+
+@router.post("/panel/api/change-password")
+async def api_change_password(request: Request):
+    if not _logged_in(request):
+        return _need_login()
+    m = _main()
+    body = await request.json()
+    current = str(body.get("current") or body.get("old_password") or "").strip()
+    new_pass = str(body.get("new_password") or "").strip()
+    confirm = str(body.get("confirm") or "").strip()
+    _, expect_pass = m.panel_credentials()
+    if not current or not _cred_eq(current, expect_pass):
+        return JSONResponse(_fail("当前密码不正确"))
+    if len(new_pass) < 6:
+        return JSONResponse(_fail("新密码至少 6 位"))
+    if new_pass != confirm:
+        return JSONResponse(_fail("两次输入的新密码不一致"))
+    if _cred_eq(new_pass, expect_pass):
+        return JSONResponse(_fail("新密码不能与当前密码相同"))
+    try:
+        m.update_panel_password(new_pass)
+    except ValueError as e:
+        return JSONResponse(_fail(str(e)))
+    except Exception as e:  # noqa: BLE001
+        log.exception("change panel password failed")
+        return JSONResponse(_fail(str(e)))
+    return _ok(msg="密码已修改，请使用新密码重新登录")
 
 
 @router.get("/panel/api/inbounds")
