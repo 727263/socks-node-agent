@@ -186,7 +186,7 @@
           <tbody id="inbList"></tbody>
         </table>
       </div>
-      <div class="hint">共享入站 id=1 不可删除，但可改账号密码。也可「新增 SOCKS」开专属端口。复制链接使用「设置」里的公网 IP。</div>
+      <div class="hint">共享入站 id=1 不可删除，但可改账号密码。也可「新增 SOCKS」开专属端口。「复制」会给出 socks5 链接，请导入 Clash / V2RayN，不要填 Windows 系统代理。请先在「设置」填好公网 IP。</div>
     </section>
 
     <section class="panel" id="tab-xray">
@@ -284,6 +284,30 @@
     </div>
   </div>
 
+  <div class="overlay" id="linkModal">
+    <div class="modal" style="max-width:520px">
+      <h3>SOCKS5 代理链接</h3>
+      <div class="hint" style="margin:0 0 12px">
+        这是 <b>SOCKS5</b> 链接，请导入 Clash / V2RayN / SwitchyOmega。
+        <b>不要</b>填到 Windows「设置 → 代理」里（系统代理只支持 HTTP，也没有账号密码栏）。
+      </div>
+      <label>链接</label>
+      <input id="link_url" readonly class="mono" style="font-size:12px" onclick="this.select()">
+      <div class="row">
+        <div><label>服务器</label><input id="link_host" readonly class="mono" onclick="this.select()"></div>
+        <div><label>端口</label><input id="link_port" readonly class="mono" onclick="this.select()"></div>
+      </div>
+      <div class="row">
+        <div><label>用户名</label><input id="link_user" readonly class="mono" onclick="this.select()"></div>
+        <div><label>密码</label><input id="link_pass" readonly class="mono" onclick="this.select()"></div>
+      </div>
+      <div class="actions">
+        <button onclick="closeModal('linkModal')">关闭</button>
+        <button class="btn-primary" onclick="copyLinkField('link_url')">复制链接</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
@@ -369,7 +393,6 @@ function renderInbounds() {
     const shared = inb.id === 1;
     const used = Number(inb.up || 0) + Number(inb.down || 0);
     const total = Number(inb.total || 0);
-    const link = `socks5://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${hostIP}:${inb.port}`;
     return `<tr>
       <td class="mono">${inb.id}</td>
       <td>${esc(inb.remark||'-')}${shared?' <span class="badge warn">共享</span>':''}</td>
@@ -380,7 +403,7 @@ function renderInbounds() {
       <td>${fmtExpiry(inb.expiryTime)}</td>
       <td><label class="switch"><input type="checkbox" ${inb.enable?'checked':''} onchange="toggle(${inb.id},this.checked)"><span class="slider"></span></label></td>
       <td>
-        <button class="btn-sm" onclick="copyText(${JSON.stringify(link)})">复制</button>
+        <button class="btn-sm" onclick="openLinkModal(${inb.id})">复制</button>
         <button class="btn-sm" onclick="openEditById(${inb.id})">编辑</button>
         <button class="btn-sm" onclick="resetTraffic(${inb.id})">清流量</button>
         ${shared ? '' : `<button class="btn-sm btn-danger" onclick="delInbound(${inb.id},${inb.port})">删除</button>`}
@@ -397,10 +420,92 @@ async function loadInbounds() {
   renderInbounds();
 }
 
-function copyText(t) {
-  navigator.clipboard.writeText(t).then(() => toast('已复制链接')).catch(() => {
-    prompt('复制链接', t);
+function buildSocksLink(user, pass, host, port) {
+  // 密码尽量原样；仅对链接保留字符做编码，方便 Clash 等导入
+  const u = encodeURIComponent(user || '');
+  const p = encodeURIComponent(pass || '');
+  return `socks5://${u}:${p}@${host}:${port}`;
+}
+
+function openLinkModal(id) {
+  const inb = allInbounds.find(x => Number(x.id) === Number(id));
+  if (!inb) return toast('入站不存在');
+  const { user, pass } = parseAccounts(inb);
+  if (!user || user === '-' || !pass || pass === '-') {
+    return toast('请先编辑账号，填写用户名和密码');
+  }
+  const host = (hostIP || '').trim() || location.hostname;
+  if (!host || host === '0.0.0.0') {
+    toast('请先在「设置」里填写公网 IP');
+  }
+  const link = buildSocksLink(user, pass, host, inb.port);
+  const modal = $('linkModal');
+  if (!modal) {
+    copyText(link).then(ok => {
+      if (ok) toast('已复制链接');
+      else window.prompt('请手动复制链接', link);
+    });
+    return;
+  }
+  $('link_url').value = link;
+  $('link_host').value = host;
+  $('link_port').value = String(inb.port || '');
+  $('link_user').value = user;
+  $('link_pass').value = pass;
+  modal.classList.add('show');
+  // 点「复制」立刻写入剪贴板；HTTP 下 clipboard API 不可用时走 execCommand
+  copyText(link).then(ok => {
+    toast(ok ? '已复制链接' : '请在弹窗中手动全选复制');
   });
+}
+
+function copyText(t) {
+  const text = String(t || '');
+  if (!text) return Promise.resolve(false);
+  // 旧代码在 http://IP:9100 下 navigator.clipboard 为 undefined，
+  // 直接 .writeText 会同步抛错，界面完全没反应。
+  try {
+    if (
+      navigator.clipboard
+      && typeof navigator.clipboard.writeText === 'function'
+      && window.isSecureContext
+    ) {
+      return navigator.clipboard.writeText(text)
+        .then(() => true)
+        .catch(() => copyTextFallback(text));
+    }
+  } catch (e) {}
+  return Promise.resolve(copyTextFallback(text));
+}
+
+function copyTextFallback(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function copyLinkField(inputId) {
+  const el = $(inputId);
+  if (!el) return;
+  try {
+    el.focus();
+    el.select();
+    el.setSelectionRange(0, (el.value || '').length);
+  } catch (e) {}
+  const ok = await copyText(el.value);
+  toast(ok ? '已复制' : '复制失败，请手动全选输入框内容');
 }
 
 async function suggestPort() {
