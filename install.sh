@@ -4,15 +4,15 @@
 # 可选 Xray 内核（三选一）:
 #   1) 交互菜单（本地 bash install.sh 且有终端）
 #   2) 参数/环境变量: --kernel xui|official  或  XRAY_KERNEL=official
-#   3) 非交互默认 vaxilu XUI 内核（curl | bash 且未指定时）
+#   3) 非交互默认 XTLS 官方最新内核（curl | bash 且未指定时）
 #
 # 网络安装:
 #   curl -fsSL .../install.sh | bash
-#   curl -fsSL .../install.sh | XRAY_KERNEL=official bash
+#   curl -fsSL .../install.sh | XRAY_KERNEL=xui bash
 #
 # 本地安装:
 #   cd node-agent && bash install.sh
-#   bash install.sh --kernel official
+#   bash install.sh --kernel xui
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -52,20 +52,21 @@ usage() {
   SKIP_BBR=1                      跳过 TCP BBR 拥塞控制优化
 
 内核:
-  xui       vaxilu 旧版 XUI 发布包 Xray（较旧，与 XUI 面板同款）
-  official  XTLS 官方最新 Xray（xray-install）
+  official  XTLS 官方最新 Xray（默认，xray-install）
+  xui       vaxilu 旧版 XUI 发布包 Xray（较旧）
 
 示例:
   bash install.sh
-  bash install.sh --kernel official
+  bash install.sh --kernel xui
+  curl -fsSL .../install.sh | bash
   curl -fsSL .../install.sh | XRAY_KERNEL=xui bash
 EOF
 }
 
 normalize_xray_kernel() {
   case "$(echo "${1}" | tr '[:upper:]' '[:lower:]')" in
-    xui|vaxilu|x-ui|1) echo xui ;;
-    official|xtls|latest|2) echo official ;;
+    official|xtls|latest|1) echo official ;;
+    xui|vaxilu|x-ui|2) echo xui ;;
     "") echo "" ;;
     *) echo "invalid" ;;
   esac
@@ -106,17 +107,22 @@ choose_xray_kernel() {
   if [[ -t 0 ]]; then
     echo
     echo "请选择 Xray 内核:"
-    echo "  1) vaxilu XUI 内核  — 旧版 XUI 发布包同款，较旧，兼容性好"
-    echo "  2) XTLS 官方最新    — xray-install 安装的最新版"
+    echo "  1) XTLS 官方最新    — xray-install 安装的最新版（推荐，热加载更稳）"
+    echo "  2) vaxilu XUI 内核  — 旧版 XUI 发布包同款，较旧"
     echo
     local choice=""
     read -rp "请输入 [1/2] (默认 1): " choice
     choice="${choice:-1}"
-    XRAY_KERNEL="$(normalize_xray_kernel "${choice}")"
+    # 交互菜单: 1=official, 2=xui（与旧版 1=xui 对调）
+    case "${choice}" in
+      1|official|xtls|latest) XRAY_KERNEL="official" ;;
+      2|xui|vaxilu|x-ui) XRAY_KERNEL="xui" ;;
+      *) XRAY_KERNEL="$(normalize_xray_kernel "${choice}")" ;;
+    esac
     [[ "${XRAY_KERNEL}" != "invalid" ]] || error "无效选择: ${choice}"
   else
-    XRAY_KERNEL="xui"
-    info "非交互安装，默认 vaxilu XUI 内核（改用官方版: XRAY_KERNEL=official）"
+    XRAY_KERNEL="official"
+    info "非交互安装，默认 XTLS 官方最新内核（改用旧版: XRAY_KERNEL=xui）"
   fi
 }
 
@@ -668,5 +674,5 @@ echo "请放行: ${AGENT_PORT}/tcp(面板) / ${SHARED_PORT}/tcp(共享) / ${PORT
 echo "安全建议：云安全组把 ${AGENT_PORT} 只放行你的管理 IP（及 Bot 服务器 IP，若使用）。"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
-echo "改用官方最新 Xray: XRAY_KERNEL=official bash install.sh"
+echo "改用旧版 XUI 内核: XRAY_KERNEL=xui bash install.sh"
 echo "============================================================"

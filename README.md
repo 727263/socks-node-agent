@@ -13,10 +13,16 @@
 curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | bash
 ```
 
-建议热加载稳定时用官方内核：
+建议热加载稳定时用官方内核（现为默认）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | XRAY_KERNEL=official bash
+curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | bash
+```
+
+若需旧版 vaxilu 内核：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/727263/socks-node-agent/main/install.sh | XRAY_KERNEL=xui bash
 ```
 
 ## 单独使用（不装机器人）
@@ -51,7 +57,7 @@ Agent 对 **SOCKS5** 入站采用与 3X-UI 类似的策略：
 | **交互菜单** | 本地执行 `bash install.sh`，按提示选 1 或 2 |
 | **命令行参数** | `bash install.sh --kernel official` |
 | **环境变量** | `XRAY_KERNEL=xui bash install.sh`（`curl \| bash` 时用） |
-| **非交互默认** | `curl ... \| bash` 且未指定 → **vaxilu XUI 内核** |
+| **非交互默认** | `curl ... \| bash` 且未指定 → **XTLS 官方最新** |
 
 | 内核 | 说明 |
 |------|------|
