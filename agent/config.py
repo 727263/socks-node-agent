@@ -15,8 +15,10 @@ class AgentConfig:
     xray_config: str = "/usr/local/etc/xray/config.json"
     xray_api_addr: str = "127.0.0.1:10085"
     xray_service: str = "xray"
-    # 安装时创建的共享占位入站端口（对应 Bot 节点「SOCKS 端口」）
+    # 共享 SOCKS 端口（独立使用 / Bot 节点「SOCKS 端口」）
     shared_port: int = 1080
+    # 公网 IP（复制链接用；也可在面板里改，写入 settings.json）
+    public_ip: str = ""
     traffic_sync_seconds: int = 20
     enforce_seconds: int = 30
     # Web 面板
@@ -45,6 +47,7 @@ def load_config() -> AgentConfig:
         xray_api_addr=os.getenv("XRAY_API_ADDR", "127.0.0.1:10085"),
         xray_service=os.getenv("XRAY_SERVICE", "xray"),
         shared_port=int(os.getenv("AGENT_SHARED_PORT", "1080")),
+        public_ip=os.getenv("AGENT_PUBLIC_IP", "").strip(),
         traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "20")),
         enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "30")),
         panel_enable=_env_bool("PANEL_ENABLE", True),

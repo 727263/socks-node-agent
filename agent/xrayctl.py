@@ -113,6 +113,10 @@ class XrayController:
 
     def write_config(self, enabled_inbounds: list[dict[str, Any]]) -> bool:
         """写入 Xray 配置；内容无变化返回 False（避免无谓重启）。"""
+        return self.write_config_only(enabled_inbounds)
+
+    def write_config_only(self, enabled_inbounds: list[dict[str, Any]]) -> bool:
+        """只写盘、不重启。内容无变化返回 False。供热加载路径先对齐 config.json。"""
         cfg = build_full_config(enabled_inbounds, api_port=self._api_port)
         new_text = json.dumps(cfg, ensure_ascii=False, indent=2)
         path = Path(self.config_path)
@@ -210,7 +214,19 @@ class XrayController:
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
 
-    def add_inbound_live(self, inb: dict[str, Any]) -> None:
+    def wait_port_ready(self, port: int, timeout: float = 3.0) -> bool:
+        """热加载后短等端口就绪；超时只返回 False，不抛异常。"""
+        if not port:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._port_open(port):
+                return True
+            time.sleep(0.15)
+        log.warning("xray live port not ready %.1fs: %s", timeout, port)
+        return False
+
+    def add_inbound_live(self, inb: dict[str, Any], *, wait_port: bool = True) -> None:
         payload = inbound_to_xray(inb)
         with tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False, encoding="utf-8"
@@ -223,6 +239,8 @@ class XrayController:
                 r = self._run_api([sub, tmp_path])
                 if r.returncode == 0:
                     log.info("xray api %s ok tag=%s", sub, payload["tag"])
+                    if wait_port:
+                        self.wait_port_ready(int(payload.get("port") or 0))
                     return
                 last = r
             raise RuntimeError(
@@ -244,6 +262,15 @@ class XrayController:
                 return
             raise RuntimeError(f"xray api rmi failed: {(r.stderr or r.stdout or '').strip()}")
         log.info("xray api rmi ok tag=%s", tag)
+
+    def replace_inbound_live(self, old_tag: str, inb: dict[str, Any]) -> None:
+        """先删后加，用于改端口/账号；旧 tag 不存在时忽略。"""
+        try:
+            self.remove_inbound_live(old_tag)
+        except Exception as e:  # noqa: BLE001
+            log.warning("replace live rmi %s: %s", old_tag, e)
+        if inb.get("enable"):
+            self.add_inbound_live(inb)
 
     def query_inbound_traffic(self) -> dict[str, tuple[int, int]]:
         """返回 {tag: (uplink, downlink)} 累计值（自 xray 启动/上次 reset）。"""

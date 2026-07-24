@@ -104,7 +104,37 @@ def api_overview(request: Request):
     )
     data["shared_port"] = cfg.shared_port
     data["inbound_count"] = len(m.store.list_all())
+    data["public_ip"] = m.resolve_public_ip()
+    data["standalone"] = True
     return _ok(data)
+
+
+@router.get("/panel/api/settings")
+def api_get_settings(request: Request):
+    if not _logged_in(request):
+        return _need_login()
+    m = _main()
+    return _ok({
+        "public_ip": m.resolve_public_ip(),
+        "shared_port": m.cfg.shared_port,
+        "listen_port": m.cfg.listen_port,
+    })
+
+
+@router.post("/panel/api/settings")
+async def api_set_settings(request: Request):
+    if not _logged_in(request):
+        return _need_login()
+    m = _main()
+    body = await request.json()
+    if "public_ip" in body:
+        ip = str(body.get("public_ip") or "").strip()
+        m.local_settings.set("public_ip", ip)
+    return _ok({
+        "public_ip": m.resolve_public_ip(),
+        "shared_port": m.cfg.shared_port,
+        "listen_port": m.cfg.listen_port,
+    }, msg="已保存")
 
 
 @router.get("/panel/api/inbounds")
@@ -157,7 +187,7 @@ async def api_add_inbound(request: Request):
                 expiry_time=expiry,
                 settings=json.dumps(_accounts_settings(user, pw), ensure_ascii=False),
             )
-            m._apply_xray()
+            m._persist_add(inb)
         return _ok(inb)
     except Exception as e:  # noqa: BLE001
         log.exception("panel add inbound failed")
@@ -198,7 +228,7 @@ async def api_update_inbound(inbound_id: int, request: Request):
             updated = m.store.update(inbound_id, fields)
             if updated is None:
                 return JSONResponse(_fail("更新失败"))
-            m._apply_xray()
+            m._persist_update(old, updated, fields)
         return _ok(updated)
     except Exception as e:  # noqa: BLE001
         log.exception("panel update inbound failed")
@@ -214,14 +244,51 @@ def api_del_inbound(inbound_id: int, request: Request):
         if inbound_id == 1:
             return JSONResponse(_fail("共享占位入站(id=1)不可删除"))
         with m._ops_lock:
-            if m.store.get(inbound_id) is None:
+            old = m.store.get(inbound_id)
+            if old is None:
                 return _ok(msg="已不存在")
             m.store.delete(inbound_id)
-            m._apply_xray()
+            m._persist_remove(old)
         return _ok(True)
     except Exception as e:  # noqa: BLE001
         log.exception("panel del inbound failed")
         return JSONResponse(_fail(str(e)))
+
+
+@router.post("/panel/api/inbounds/{inbound_id}/reset-traffic")
+def api_reset_traffic(inbound_id: int, request: Request):
+    if not _logged_in(request):
+        return _need_login()
+    m = _main()
+    try:
+        with m._ops_lock:
+            inb = m.store.reset_traffic(inbound_id)
+            if inb is None:
+                return JSONResponse(_fail(f"入站 {inbound_id} 不存在"))
+            tag = inb.get("tag") or f"in-{inbound_id}"
+            try:
+                m.xray.reset_inbound_stats(tag)
+            except Exception as e:  # noqa: BLE001
+                log.debug("panel reset xray stats: %s", e)
+            m._last_stats[tag] = (0, 0)
+        return _ok(True, msg="流量已清零")
+    except Exception as e:  # noqa: BLE001
+        log.exception("panel reset traffic failed")
+        return JSONResponse(_fail(str(e)))
+
+
+@router.get("/panel/api/suggest-port")
+def api_suggest_port(request: Request):
+    if not _logged_in(request):
+        return _need_login()
+    m = _main()
+    import random
+    used = m.store.used_ports()
+    for _ in range(80):
+        port = random.randint(20000, 65000)
+        if port not in used:
+            return _ok({"port": port})
+    return JSONResponse(_fail("无可用端口"))
 
 
 @router.get("/panel/api/traffic")

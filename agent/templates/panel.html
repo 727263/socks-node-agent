@@ -3,147 +3,248 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SOCKS 节点面板</title>
+  <title>SOCKS Agent · 3X-UI Style</title>
   <style>
+    :root {
+      --bg: #0f1419;
+      --side: #161b22;
+      --panel: #1c2128;
+      --line: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #3fb950;
+      --accent2: #58a6ff;
+      --warn: #d29922;
+      --danger: #f85149;
+      --input: #0d1117;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      background: #f4f6fa; color: #2d3748; font-size: 14px; }
-    .topbar { background: #fff; padding: 14px 24px; display: flex; justify-content: space-between;
-      align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); position: sticky; top: 0; z-index: 10; }
-    .topbar h1 { font-size: 17px; color: #333; }
-    .topbar .right { display: flex; align-items: center; gap: 14px; color: #666; font-size: 13px; }
-    .container { max-width: 1180px; margin: 20px auto; padding: 0 16px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; margin-bottom: 20px; }
-    .card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
-    .card .k { color: #999; font-size: 12px; margin-bottom: 8px; }
-    .card .v { font-size: 20px; font-weight: 600; color: #2d3748; }
-    .card .v small { font-size: 12px; color: #999; font-weight: 400; }
-    .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; }
-    .badge.ok { background: #c6f6d5; color: #22543d; }
-    .badge.bad { background: #fed7d7; color: #742a2a; }
-    .panel { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05); margin-bottom: 20px; }
-    .panel h2 { font-size: 15px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); font-size: 14px; min-height: 100vh;
+      display: flex;
+    }
+    .side {
+      width: 220px; background: var(--side); border-right: 1px solid var(--line);
+      padding: 18px 12px; display: flex; flex-direction: column; gap: 6px;
+      position: sticky; top: 0; height: 100vh;
+    }
+    .brand { padding: 8px 12px 18px; font-weight: 700; font-size: 15px; color: var(--accent2); }
+    .brand small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .nav-btn {
+      text-align: left; background: transparent; border: none; color: var(--muted);
+      padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .nav-btn:hover { background: #21262d; color: var(--text); }
+    .nav-btn.active { background: #21262d; color: var(--accent2); }
+    .side .who { margin-top: auto; padding: 12px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+    .main { flex: 1; padding: 20px 24px; max-width: 1200px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    }
+    .card .k { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .card .v { font-size: 18px; font-weight: 600; }
+    .card .v small { font-size: 12px; color: var(--muted); font-weight: 400; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 16px 18px; margin-bottom: 16px; display: none;
+    }
+    .panel.show { display: block; }
+    .panel h2 {
+      font-size: 15px; margin-bottom: 14px; display: flex; justify-content: space-between;
+      align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input, select {
+      background: var(--input); border: 1px solid var(--line); color: var(--text);
+      border-radius: 7px; padding: 8px 10px; font-size: 13px; outline: none;
+    }
+    input:focus { border-color: var(--accent2); }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #edf2f7; font-size: 13px; }
-    th { color: #999; font-weight: 500; }
-    td .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
-    button { border: none; border-radius: 7px; padding: 7px 13px; font-size: 13px; cursor: pointer; transition: .15s; }
-    .btn-primary { background: #667eea; color: #fff; } .btn-primary:hover { background: #5568d3; }
-    .btn-sm { padding: 4px 10px; font-size: 12px; }
-    .btn-gray { background: #edf2f7; color: #4a5568; } .btn-gray:hover { background: #e2e8f0; }
-    .btn-danger { background: #fed7d7; color: #c53030; } .btn-danger:hover { background: #feb2b2; }
-    .ops { display: flex; gap: 10px; flex-wrap: wrap; }
-    .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+    th { color: var(--muted); font-weight: 500; }
+    .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+    button {
+      border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; font-size: 13px;
+      cursor: pointer; background: #21262d; color: var(--text); transition: .15s;
+    }
+    button:hover { border-color: var(--muted); }
+    .btn-primary { background: #238636; border-color: #238636; color: #fff; }
+    .btn-primary:hover { background: #2ea043; }
+    .btn-sm { padding: 4px 9px; font-size: 12px; }
+    .btn-danger { color: var(--danger); border-color: #6e2b2b; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+    .badge.ok { background: #1a3a2a; color: var(--accent); }
+    .badge.bad { background: #3d1a1a; color: var(--danger); }
+    .badge.warn { background: #3d321a; color: var(--warn); }
+    .switch { position: relative; display: inline-block; width: 38px; height: 20px; }
     .switch input { display: none; }
-    .slider { position: absolute; cursor: pointer; inset: 0; background: #cbd5e0; border-radius: 22px; transition: .2s; }
-    .slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
-    input:checked + .slider { background: #48bb78; }
+    .slider { position: absolute; cursor: pointer; inset: 0; background: #30363d; border-radius: 20px; transition: .2s; }
+    .slider:before { content: ""; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+    input:checked + .slider { background: #238636; }
     input:checked + .slider:before { transform: translateX(18px); }
-    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .ops { display: flex; gap: 8px; flex-wrap: wrap; }
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+      align-items: center; justify-content: center; z-index: 100;
+    }
     .overlay.show { display: flex; }
-    .modal { background: #fff; border-radius: 14px; padding: 24px; width: 420px; max-width: 92vw; max-height: 86vh; overflow: auto; }
-    .modal h3 { font-size: 16px; margin-bottom: 16px; }
-    .modal label { display: block; font-size: 13px; color: #555; margin: 12px 0 5px; }
-    .modal input { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 7px; font-size: 14px; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 22px; width: 460px; max-width: 94vw; max-height: 88vh; overflow: auto;
+    }
+    .modal h3 { font-size: 16px; margin-bottom: 14px; }
+    .modal label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; }
+    .modal input { width: 100%; }
     .modal .row { display: flex; gap: 12px; } .modal .row > div { flex: 1; }
-    .modal .actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; }
+    .modal .actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
     .verlist { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 8px; }
-    .verlist button { background: #edf2f7; color: #2d3748; }
-    .verlist button.pre { background: #fefcbf; }
-    .verlist button:hover { background: #667eea; color: #fff; }
-    pre.log { background: #1a202c; color: #cbd5e0; padding: 14px; border-radius: 8px; font-size: 12px;
-      max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-    .tabs { display: flex; gap: 8px; } .tabs button.active { background: #667eea; color: #fff; }
-    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2d3748;
-      color: #fff; padding: 11px 20px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .3s; z-index: 200; }
+    .verlist button.pre { border-color: var(--warn); color: var(--warn); }
+    pre.log {
+      background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 8px; font-size: 12px;
+      max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+      border: 1px solid var(--line);
+    }
+    .toast {
+      position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+      background: #21262d; border: 1px solid var(--line); color: #fff;
+      padding: 10px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .25s; z-index: 200;
+    }
     .toast.show { opacity: 1; }
-    .muted { color: #a0aec0; font-size: 12px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .hint { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    @media (max-width: 800px) {
+      body { flex-direction: column; }
+      .side { width: 100%; height: auto; position: relative; flex-direction: row; flex-wrap: wrap; }
+      .side .who { margin-top: 0; border: none; width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <div class="topbar">
-    <h1>SOCKS 节点面板</h1>
-    <div class="right">
-      <span id="who">{{ user }}</span>
-      <button class="btn-gray btn-sm" onclick="logout()">登出</button>
+  <aside class="side">
+    <div class="brand">SOCKS Agent<small>类 3X-UI · 仅 SOCKS5 · 热加载</small></div>
+    <button class="nav-btn active" data-tab="dash" onclick="showTab('dash')">仪表盘</button>
+    <button class="nav-btn" data-tab="inbounds" onclick="showTab('inbounds')">入站 / 账号</button>
+    <button class="nav-btn" data-tab="xray" onclick="showTab('xray')">Xray 内核</button>
+    <button class="nav-btn" data-tab="logs" onclick="showTab('logs')">日志</button>
+    <button class="nav-btn" data-tab="ops" onclick="showTab('ops')">运维</button>
+    <button class="nav-btn" data-tab="settings" onclick="showTab('settings')">设置</button>
+    <div class="who">
+      <div id="who">{{ user }}</div>
+      <button class="btn-sm" style="margin-top:8px" onclick="logout()">登出</button>
     </div>
-  </div>
+  </aside>
 
-  <div class="container">
+  <div class="main">
     <div class="cards" id="cards"></div>
 
-    <div class="panel">
-      <h2>Xray 内核
-        <button class="btn-gray btn-sm" onclick="openVersions()">切换版本</button>
-      </h2>
-      <div id="xrayInfo" class="muted">加载中...</div>
-    </div>
+    <section class="panel show" id="tab-dash">
+      <h2>系统概览</h2>
+      <div id="dashExtra" class="muted">加载中...</div>
+      <div class="hint">可<strong>单独使用</strong>：装好后打开本面板增删 SOCKS 账号即可，不必安装机器人。额度/到期由本机 Agent 执法；新开优先热加载。</div>
+    </section>
 
-    <div class="panel">
-      <h2>账号 / 入站
-        <button class="btn-primary btn-sm" onclick="openAdd()">+ 新增账号</button>
-      </h2>
-      <table>
-        <thead><tr>
-          <th>端口</th><th>用户名</th><th>密码</th><th>已用 / 总量</th><th>到期</th><th>启用</th><th>操作</th>
-        </tr></thead>
-        <tbody id="inbList"></tbody>
-      </table>
-      <div class="muted" style="margin-top:10px">提示：手动增删的账号与 Bot 自动同步共用数据；若 Bot 对本节点做全量同步，手动账号可能被清理，建议仅用于临时/测试。</div>
-    </div>
-
-    <div class="panel">
-      <h2>日志
-        <span class="tabs">
-          <button class="btn-gray btn-sm active" id="tab-xray" onclick="loadLog('xray')">xray</button>
-          <button class="btn-gray btn-sm" id="tab-agent" onclick="loadLog('agent')">agent</button>
-          <button class="btn-gray btn-sm" onclick="loadLog(curLog)">刷新</button>
+    <section class="panel" id="tab-inbounds">
+      <h2>
+        <span>入站列表 <span class="muted" id="inbCount"></span></span>
+        <span class="toolbar">
+          <input id="q" placeholder="搜索端口/用户/备注" style="width:180px" oninput="renderInbounds()">
+          <button class="btn-sm" onclick="loadInbounds()">刷新</button>
+          <button class="btn-primary btn-sm" onclick="openAdd()">+ 新增 SOCKS</button>
         </span>
       </h2>
-      <pre class="log" id="logBox">点击上方标签加载日志...</pre>
-    </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>备注</th><th>端口</th><th>用户</th><th>密码</th>
+            <th>已用 / 总量</th><th>到期</th><th>启用</th><th>操作</th>
+          </tr></thead>
+          <tbody id="inbList"></tbody>
+        </table>
+      </div>
+      <div class="hint">共享入站 id=1 不可删除，但可改账号密码。也可「新增 SOCKS」开专属端口。复制链接使用「设置」里的公网 IP。</div>
+    </section>
 
-    <div class="panel">
+    <section class="panel" id="tab-xray">
+      <h2>Xray 内核
+        <button class="btn-sm" onclick="openVersions()">切换版本</button>
+      </h2>
+      <div id="xrayInfo" class="muted">加载中...</div>
+    </section>
+
+    <section class="panel" id="tab-logs">
+      <h2>日志
+        <span class="toolbar">
+          <button class="btn-sm" id="tab-xray-log" onclick="loadLog('xray')">xray</button>
+          <button class="btn-sm" id="tab-agent-log" onclick="loadLog('agent')">agent</button>
+          <button class="btn-sm" onclick="loadLog(curLog)">刷新</button>
+        </span>
+      </h2>
+      <pre class="log" id="logBox">选择服务查看日志...</pre>
+    </section>
+
+    <section class="panel" id="tab-ops">
       <h2>运维操作</h2>
       <div class="ops">
-        <button class="btn-gray" onclick="ops('restart-xray','重启 xray')">重启 xray</button>
-        <button class="btn-gray" onclick="ops('reload','重载配置')">从数据库重载</button>
-        <button class="btn-gray" onclick="ops('restart-agent','重启 agent')">重启 agent</button>
-        <button class="btn-gray" onclick="firewall()">防火墙检查</button>
+        <button onclick="ops('restart-xray','重启 xray')">重启 xray</button>
+        <button onclick="ops('reload','从数据库全量重载')">全量重载配置</button>
+        <button onclick="ops('restart-agent','重启 agent')">重启 agent</button>
+        <button onclick="firewall()">防火墙检查</button>
       </div>
       <div id="fwResult" class="muted" style="margin-top:12px"></div>
-    </div>
+    </section>
+
+    <section class="panel" id="tab-settings">
+      <h2>节点设置</h2>
+      <label class="muted" style="display:block;margin-bottom:6px">公网 IP（复制 socks5 链接用）</label>
+      <div class="toolbar">
+        <input id="set_public_ip" placeholder="如 1.2.3.4" style="width:220px">
+        <button class="btn-primary btn-sm" onclick="saveSettings()">保存</button>
+      </div>
+      <div class="hint" style="margin-top:12px">
+        独立使用只需本面板；对接机器人时再把 API Token 填到 Bot 后台即可，两边共用同一套账号库。
+        首次启动若共享端口无账号，会自动生成一组，见服务器
+        <span class="mono">/opt/socks-agent/data/SHARED_SOCKS.txt</span>。
+      </div>
+    </section>
   </div>
 
-  <!-- 账号编辑模态 -->
   <div class="overlay" id="inbModal">
     <div class="modal">
-      <h3 id="inbTitle">新增账号</h3>
+      <h3 id="inbTitle">新增 SOCKS 账号</h3>
       <input type="hidden" id="f_id">
+      <label>备注</label>
+      <input id="f_remark" placeholder="可选">
       <div class="row">
-        <div><label>端口</label><input id="f_port" type="number" placeholder="如 20647"></div>
+        <div>
+          <label>端口</label>
+          <div style="display:flex;gap:6px">
+            <input id="f_port" type="number" placeholder="如 20647">
+            <button type="button" class="btn-sm" onclick="suggestPort()">随机</button>
+          </div>
+        </div>
         <div><label>流量上限 (GB, 0=不限)</label><input id="f_total" type="number" step="0.1" value="0"></div>
       </div>
       <div class="row">
-        <div><label>用户名</label><input id="f_user" placeholder="留空=不改"></div>
-        <div><label>密码</label><input id="f_pass" placeholder="留空=不改"></div>
+        <div><label>用户名</label><input id="f_user" placeholder="必填"></div>
+        <div><label>密码</label><input id="f_pass" placeholder="必填"></div>
       </div>
       <label>有效天数 (从现在起, 0=永久)</label>
       <input id="f_days" type="number" value="0">
       <div class="actions">
-        <button class="btn-gray" onclick="closeModal('inbModal')">取消</button>
+        <button onclick="closeModal('inbModal')">取消</button>
         <button class="btn-primary" onclick="saveInbound()">保存</button>
       </div>
     </div>
   </div>
 
-  <!-- 版本切换模态 -->
   <div class="overlay" id="verModal">
     <div class="modal">
       <h3>切换 Xray 版本</h3>
-      <div class="muted">当前：<span id="curVer">-</span>。点击版本下载并切换（自动校验，失败回滚）。绿色=正式版，黄色=预发布。</div>
+      <div class="muted">当前：<span id="curVer">-</span>。建议使用较新正式版以稳定热加载。</div>
       <div class="verlist" id="verList" style="margin-top:12px">加载中...</div>
-      <div class="actions"><button class="btn-gray" onclick="closeModal('verModal')">关闭</button></div>
+      <div class="actions"><button onclick="closeModal('verModal')">关闭</button></div>
     </div>
   </div>
 
@@ -152,15 +253,39 @@
 <script>
 const $ = id => document.getElementById(id);
 let curLog = 'xray';
+let allInbounds = [];
+let hostIP = location.hostname;
 
-function toast(msg) { const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600); }
-function fmtBytes(n) { n=Number(n||0); if(n<1024) return n+' B'; const u=['KB','MB','GB','TB']; let i=-1; do{n/=1024;i++;}while(n>=1024&&i<u.length-1); return n.toFixed(2)+' '+u[i]; }
-function fmtExpiry(ms) { ms=Number(ms||0); if(!ms) return '永久'; const d=new Date(ms); const now=Date.now(); const left=Math.ceil((ms-now)/86400000); return d.toLocaleDateString('zh-CN')+(left>0?` (剩${left}天)`:' (已过期)'); }
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2600);
+}
+function fmtBytes(n) {
+  n = Number(n || 0); if (n < 1024) return n + ' B';
+  const u = ['KB','MB','GB','TB']; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(2) + ' ' + u[i];
+}
+function fmtExpiry(ms) {
+  ms = Number(ms || 0); if (!ms) return '永久';
+  const d = new Date(ms); const left = Math.ceil((ms - Date.now()) / 86400000);
+  return d.toLocaleDateString('zh-CN') + (left > 0 ? ` (剩${left}天)` : ' (已过期)');
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
 async function api(url, opts) {
   const r = await fetch(url, opts);
-  if (r.status===401) { location.href='/panel/login'; throw new Error('未登录'); }
+  if (r.status === 401) { location.href = '/panel/login'; throw new Error('未登录'); }
   return r.json();
+}
+
+function showTab(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('show'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  $('tab-' + name).classList.add('show');
+  if (name === 'logs' && !$('logBox').dataset.loaded) loadLog('xray');
 }
 
 async function loadOverview() {
@@ -171,117 +296,231 @@ async function loadOverview() {
     $('cards').innerHTML = `
       <div class="card"><div class="k">CPU</div><div class="v">${o.cpu.percent}% <small>/ ${o.cpu.count} 核</small></div></div>
       <div class="card"><div class="k">内存</div><div class="v">${o.mem.percent}% <small>${fmtBytes(o.mem.used)}/${fmtBytes(o.mem.total)}</small></div></div>
-      <div class="card"><div class="k">负载 (1/5/15)</div><div class="v" style="font-size:16px">${o.load.map(x=>x.toFixed(2)).join(' / ')}</div></div>
-      <div class="card"><div class="k">Xray</div><div class="v"><span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span> <small>${o.xray.version||'-'}</small></div></div>
-      <div class="card"><div class="k">Xray 运行</div><div class="v" style="font-size:16px">${o.xray.uptime_h}</div></div>
-      <div class="card"><div class="k">入站数</div><div class="v">${o.inbound_count}</div></div>`;
-    $('xrayInfo').innerHTML = `版本 <b>${o.xray.version||'未知'}</b>，状态 <span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span>，运行 ${o.xray.uptime_h}；Agent <span class="badge ${o.agent.status==='active'?'ok':'bad'}">${o.agent.status}</span> 运行 ${o.agent.uptime_h}`;
-  } catch(e) {}
+      <div class="card"><div class="k">负载</div><div class="v" style="font-size:15px">${o.load.map(x=>x.toFixed(2)).join(' / ')}</div></div>
+      <div class="card"><div class="k">Xray</div><div class="v"><span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span></div></div>
+      <div class="card"><div class="k">入站数</div><div class="v">${o.inbound_count}</div></div>
+      <div class="card"><div class="k">共享端口</div><div class="v">${o.shared_port||'-'}</div></div>`;
+    $('xrayInfo').innerHTML = `版本 <b>${esc(o.xray.version||'未知')}</b>，状态 <span class="badge ${o.xray.status==='active'?'ok':'bad'}">${o.xray.status}</span>，运行 ${esc(o.xray.uptime_h)}；Agent <span class="badge ${o.agent.status==='active'?'ok':'bad'}">${o.agent.status}</span> 运行 ${esc(o.agent.uptime_h)}`;
+    $('dashExtra').innerHTML = `公网 IP <span class="mono">${esc(o.public_ip||hostIP)}</span> · 共享 SOCKS <span class="mono">${o.shared_port}</span> · 可独立使用，无需机器人`;
+    if (o.public_ip) hostIP = o.public_ip;
+    if ($('set_public_ip') && !$('set_public_ip').dataset.touched) {
+      $('set_public_ip').value = o.public_ip || '';
+    }
+  } catch (e) {}
+}
+
+function parseAccounts(inb) {
+  let user = '-', pass = '-';
+  try {
+    const s = JSON.parse(inb.settings || '{}');
+    const a = (s.accounts || [])[0];
+    if (a) { user = a.user || '-'; pass = a.pass || '-'; }
+  } catch (e) {}
+  return { user, pass };
+}
+
+function renderInbounds() {
+  const q = ($('q').value || '').trim().toLowerCase();
+  const list = allInbounds.filter(inb => {
+    if (!q) return true;
+    const { user } = parseAccounts(inb);
+    const blob = `${inb.id} ${inb.port} ${inb.remark||''} ${user}`.toLowerCase();
+    return blob.includes(q);
+  });
+  $('inbCount').textContent = `(${list.length}/${allInbounds.length})`;
+  const rows = list.map(inb => {
+    const { user, pass } = parseAccounts(inb);
+    const shared = inb.id === 1;
+    const used = Number(inb.up || 0) + Number(inb.down || 0);
+    const total = Number(inb.total || 0);
+    const link = `socks5://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${hostIP}:${inb.port}`;
+    return `<tr>
+      <td class="mono">${inb.id}</td>
+      <td>${esc(inb.remark||'-')}${shared?' <span class="badge warn">共享</span>':''}</td>
+      <td class="mono">${inb.port}</td>
+      <td class="mono">${esc(user)}</td>
+      <td class="mono">${esc(pass)}</td>
+      <td>${fmtBytes(used)} / ${total ? fmtBytes(total) : '不限'}</td>
+      <td>${fmtExpiry(inb.expiryTime)}</td>
+      <td><label class="switch"><input type="checkbox" ${inb.enable?'checked':''} onchange="toggle(${inb.id},this.checked)"><span class="slider"></span></label></td>
+      <td>
+        <button class="btn-sm" onclick="copyText(${JSON.stringify(link)})">复制</button>
+        <button class="btn-sm" onclick="openEditById(${inb.id})">编辑</button>
+        <button class="btn-sm" onclick="resetTraffic(${inb.id})">清流量</button>
+        ${shared ? '' : `<button class="btn-sm btn-danger" onclick="delInbound(${inb.id},${inb.port})">删除</button>`}
+      </td>
+    </tr>`;
+  }).join('');
+  $('inbList').innerHTML = rows || '<tr><td colspan="9" class="muted">暂无账号</td></tr>';
 }
 
 async function loadInbounds() {
   const j = await api('/panel/api/inbounds');
   if (!j.success) return;
-  const rows = j.obj.map(inb => {
-    let user='-', pass='-';
-    try { const s=JSON.parse(inb.settings||'{}'); const a=(s.accounts||[])[0]; if(a){user=a.user;pass=a.pass;} } catch(e){}
-    const shared = inb.id===1;
-    const used = Number(inb.up||0)+Number(inb.down||0);
-    const total = Number(inb.total||0);
-    return `<tr>
-      <td class="mono">${inb.port}${shared?' <span class="muted">(共享)</span>':''}</td>
-      <td class="mono">${user}</td>
-      <td class="mono">${pass}</td>
-      <td>${fmtBytes(used)} / ${total?fmtBytes(total):'不限'}</td>
-      <td>${fmtExpiry(inb.expiryTime)}</td>
-      <td><label class="switch"><input type="checkbox" ${inb.enable?'checked':''} onchange="toggle(${inb.id},this.checked)"><span class="slider"></span></label></td>
-      <td>
-        <button class="btn-gray btn-sm" onclick='openEdit(${JSON.stringify(inb)})'>编辑</button>
-        ${shared?'':`<button class="btn-danger btn-sm" onclick="delInbound(${inb.id},${inb.port})">删除</button>`}
-      </td></tr>`;
-  }).join('');
-  $('inbList').innerHTML = rows || '<tr><td colspan="7" class="muted">暂无账号</td></tr>';
+  allInbounds = j.obj || [];
+  renderInbounds();
+}
+
+function copyText(t) {
+  navigator.clipboard.writeText(t).then(() => toast('已复制链接')).catch(() => {
+    prompt('复制链接', t);
+  });
+}
+
+async function suggestPort() {
+  const j = await api('/panel/api/suggest-port');
+  if (j.success) $('f_port').value = j.obj.port;
+  else toast(j.msg || '无可用端口');
 }
 
 function openAdd() {
-  $('inbTitle').textContent='新增账号'; $('f_id').value=''; $('f_port').value=''; $('f_port').disabled=false;
-  $('f_total').value='0'; $('f_user').value=''; $('f_pass').value=''; $('f_days').value='0';
-  $('f_user').placeholder='必填'; $('f_pass').placeholder='必填';
+  $('inbTitle').textContent = '新增 SOCKS 账号';
+  $('f_id').value = '';
+  $('f_remark').value = '';
+  $('f_port').value = '';
+  $('f_port').disabled = false;
+  $('f_total').value = '0';
+  $('f_user').value = '';
+  $('f_pass').value = '';
+  $('f_user').placeholder = '必填';
+  $('f_pass').placeholder = '必填';
+  $('f_days').value = '0';
   $('inbModal').classList.add('show');
+  suggestPort();
+}
+function openEditById(id) {
+  const inb = allInbounds.find(x => Number(x.id) === Number(id));
+  if (!inb) { toast('账号不存在'); return; }
+  openEdit(inb);
 }
 function openEdit(inb) {
-  $('inbTitle').textContent='编辑账号 #'+inb.id; $('f_id').value=inb.id;
-  $('f_port').value=inb.port; $('f_port').disabled=(inb.id===1);
-  $('f_total').value=(Number(inb.total||0)/1073741824)||0;
-  $('f_user').value=''; $('f_pass').value=''; $('f_user').placeholder='留空=不改'; $('f_pass').placeholder='留空=不改';
-  $('f_days').value=0;
+  const { user, pass } = parseAccounts(inb);
+  $('inbTitle').textContent = '编辑账号 #' + inb.id;
+  $('f_id').value = inb.id;
+  $('f_remark').value = inb.remark || '';
+  $('f_port').value = inb.port;
+  $('f_port').disabled = (inb.id === 1);
+  $('f_total').value = (Number(inb.total || 0) / 1073741824) || 0;
+  $('f_user').value = user === '-' ? '' : user;
+  $('f_pass').value = pass === '-' ? '' : pass;
+  $('f_user').placeholder = '留空=不改';
+  $('f_pass').placeholder = '留空=不改';
+  $('f_days').value = 0;
   $('inbModal').classList.add('show');
 }
-function closeModal(id){ $(id).classList.remove('show'); }
+function closeModal(id) { $(id).classList.remove('show'); }
 
 async function saveInbound() {
-  const id=$('f_id').value;
-  const body={ port:Number($('f_port').value), total_gb:Number($('f_total').value||0),
-    user:$('f_user').value.trim(), pass:$('f_pass').value.trim(), expiry_days:Number($('f_days').value||0) };
-  let url='/panel/api/inbounds', j;
-  if(id){ url='/panel/api/inbounds/'+id; }
-  j = await api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if(j.success){ toast('已保存'); closeModal('inbModal'); loadInbounds(); loadOverview(); }
-  else toast('失败: '+j.msg);
+  const id = $('f_id').value;
+  const body = {
+    port: Number($('f_port').value),
+    total_gb: Number($('f_total').value || 0),
+    user: $('f_user').value.trim(),
+    pass: $('f_pass').value.trim(),
+    expiry_days: Number($('f_days').value || 0),
+    remark: $('f_remark').value.trim(),
+  };
+  const url = id ? '/panel/api/inbounds/' + id : '/panel/api/inbounds';
+  const j = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (j.success) { toast('已保存（热加载优先）'); closeModal('inbModal'); loadInbounds(); loadOverview(); }
+  else toast('失败: ' + j.msg);
 }
 async function toggle(id, en) {
-  const j = await api('/panel/api/inbounds/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enable:en})});
-  if(j.success) toast(en?'已启用':'已停用'); else { toast('失败: '+j.msg); loadInbounds(); }
+  const j = await api('/panel/api/inbounds/' + id, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enable: en }),
+  });
+  if (j.success) toast(en ? '已启用' : '已停用');
+  else { toast('失败: ' + j.msg); loadInbounds(); }
 }
 async function delInbound(id, port) {
-  if(!confirm('确认删除端口 '+port+' 的账号？')) return;
-  const j = await api('/panel/api/inbounds/'+id+'/del', {method:'POST'});
-  if(j.success){ toast('已删除'); loadInbounds(); loadOverview(); } else toast('失败: '+j.msg);
+  if (!confirm('确认删除端口 ' + port + '？')) return;
+  const j = await api('/panel/api/inbounds/' + id + '/del', { method: 'POST' });
+  if (j.success) { toast('已删除'); loadInbounds(); loadOverview(); }
+  else toast('失败: ' + j.msg);
+}
+async function resetTraffic(id) {
+  if (!confirm('清零该入站已用流量？')) return;
+  const j = await api('/panel/api/inbounds/' + id + '/reset-traffic', { method: 'POST' });
+  if (j.success) { toast('流量已清零'); loadInbounds(); }
+  else toast('失败: ' + j.msg);
 }
 
 async function loadLog(svc) {
-  curLog=svc;
-  $('tab-xray').classList.toggle('active', svc==='xray');
-  $('tab-agent').classList.toggle('active', svc==='agent');
-  $('logBox').textContent='加载中...';
-  const j = await api('/panel/api/logs?service='+svc+'&lines=150');
-  $('logBox').textContent = j.success ? (j.obj.text||'(空)') : ('失败: '+j.msg);
+  curLog = svc;
+  $('tab-xray-log').style.borderColor = svc === 'xray' ? '#58a6ff' : '';
+  $('tab-agent-log').style.borderColor = svc === 'agent' ? '#58a6ff' : '';
+  $('logBox').textContent = '加载中...';
+  const j = await api('/panel/api/logs?service=' + svc + '&lines=180');
+  $('logBox').textContent = j.success ? (j.obj.text || '(空)') : ('失败: ' + j.msg);
+  $('logBox').dataset.loaded = '1';
   $('logBox').scrollTop = $('logBox').scrollHeight;
 }
 
 async function openVersions() {
-  $('verModal').classList.add('show'); $('verList').textContent='加载中...';
+  $('verModal').classList.add('show');
+  $('verList').textContent = '加载中...';
   const j = await api('/panel/api/xray/versions');
-  if(!j.success){ $('verList').textContent='失败: '+j.msg; return; }
-  $('curVer').textContent = j.obj.current||'未知';
+  if (!j.success) { $('verList').textContent = '失败: ' + j.msg; return; }
+  $('curVer').textContent = j.obj.current || '未知';
   $('verList').innerHTML = j.obj.versions.map(v =>
-    `<button class="${v.prerelease?'pre':''}" onclick="switchVer('${v.tag}')">${v.tag}</button>`).join('');
+    `<button class="${v.prerelease?'pre':''}" onclick="switchVer('${v.tag}')">${v.tag}</button>`
+  ).join('');
 }
 async function switchVer(tag) {
-  if(!confirm('切换到 '+tag+' ？将下载并重启 xray，失败会自动回滚。')) return;
-  toast('正在切换到 '+tag+' ...');
-  const j = await api('/panel/api/xray/switch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tag})});
-  if(j.success){ toast('已切换: '+tag); closeModal('verModal'); loadOverview(); } else toast('失败: '+j.msg);
+  if (!confirm('切换到 ' + tag + '？将下载并重启 xray，失败自动回滚。')) return;
+  toast('正在切换...');
+  const j = await api('/panel/api/xray/switch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tag }),
+  });
+  if (j.success) { toast('已切换: ' + tag); closeModal('verModal'); loadOverview(); }
+  else toast('失败: ' + j.msg);
 }
 
 async function ops(action, name) {
-  if(!confirm('确认执行：'+name+'？')) return;
-  const j = await api('/panel/api/ops/'+action, {method:'POST'});
-  toast(j.success ? j.msg : ('失败: '+j.msg));
+  if (!confirm('确认执行：' + name + '？')) return;
+  const j = await api('/panel/api/ops/' + action, { method: 'POST' });
+  toast(j.success ? j.msg : ('失败: ' + j.msg));
   setTimeout(loadOverview, 1500);
 }
 async function firewall() {
-  $('fwResult').textContent='检查中...';
-  const j = await api('/panel/api/ops/firewall-check', {method:'POST'});
-  if(!j.success){ $('fwResult').textContent='失败: '+j.msg; return; }
-  const o=j.obj; const ports=Object.entries(o.ports_listening).map(([p,v])=>`${p}:${v?'✓':'✗'}`).join('  ');
-  $('fwResult').innerHTML = '端口监听: '+ports+'<br>'+o.firewall;
+  $('fwResult').textContent = '检查中...';
+  const j = await api('/panel/api/ops/firewall-check', { method: 'POST' });
+  if (!j.success) { $('fwResult').textContent = '失败: ' + j.msg; return; }
+  const o = j.obj;
+  const ports = Object.entries(o.ports_listening).map(([p, v]) => `${p}:${v ? '✓' : '✗'}`).join('  ');
+  $('fwResult').innerHTML = '端口监听: ' + ports + '<br>' + esc(o.firewall);
 }
 
-async function logout() { await api('/panel/logout',{method:'POST'}); location.href='/panel/login'; }
+async function saveSettings() {
+  const ip = $('set_public_ip').value.trim();
+  const j = await api('/panel/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ public_ip: ip }),
+  });
+  if (j.success) {
+    hostIP = j.obj.public_ip || location.hostname;
+    toast('设置已保存');
+    loadOverview();
+    renderInbounds();
+  } else toast('失败: ' + j.msg);
+}
 
-loadOverview(); loadInbounds();
-setInterval(loadOverview, 6000);
+async function logout() {
+  await api('/panel/logout', { method: 'POST' });
+  location.href = '/panel/login';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const el = $('set_public_ip');
+  if (el) el.addEventListener('input', () => { el.dataset.touched = '1'; });
+});
+
+loadOverview();
+loadInbounds();
+setInterval(loadOverview, 8000);
+setInterval(() => { if ($('tab-inbounds').classList.contains('show')) loadInbounds(); }, 15000);
 </script>
 </body>
 </html>

@@ -505,12 +505,15 @@ AGENT_API_TOKEN="${AGENT_API_TOKEN:-$(gen_secret 24)}"
 PANEL_USER="${PANEL_USER:-admin}"
 PANEL_PASS="${PANEL_PASS:-$(gen_secret 6)}"
 PANEL_SECRET="${PANEL_SECRET:-$(gen_secret 16)}"
+PUBLIC_IP="$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo '')"
+AGENT_PUBLIC_IP="${AGENT_PUBLIC_IP:-${PUBLIC_IP}}"
 cat > "${ENV_FILE}" <<EOF
 AGENT_LISTEN_HOST=0.0.0.0
 AGENT_LISTEN_PORT=${AGENT_PORT}
 AGENT_API_TOKEN=${AGENT_API_TOKEN}
 AGENT_DATA_DIR=${AGENT_HOME}/data
 AGENT_SHARED_PORT=${SHARED_PORT}
+AGENT_PUBLIC_IP=${AGENT_PUBLIC_IP}
 XRAY_BIN=${XRAY_BIN}
 XRAY_CONFIG=${XRAY_CONFIG}
 XRAY_API_ADDR=127.0.0.1:${XRAY_API_PORT}
@@ -554,6 +557,13 @@ systemctl restart "${XRAY_SERVICE}" || true
 systemctl restart socks-agent
 
 sleep 2
+# 等待独立共享账号播种（SHARED_SOCKS.txt）
+for _i in 1 2 3 4 5 6 7 8; do
+  if [[ -f "${AGENT_HOME}/data/SHARED_SOCKS.txt" ]]; then
+    break
+  fi
+  sleep 1
+done
 if systemctl is-active --quiet socks-agent; then
   info "socks-agent 已启动"
 else
@@ -629,30 +639,33 @@ open_firewall() {
 
 open_firewall
 
-PUBLIC_IP="$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo 'YOUR_IP')"
+PUBLIC_IP="${AGENT_PUBLIC_IP:-$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo 'YOUR_IP')}"
+SHARED_SOCKS_FILE="${AGENT_HOME}/data/SHARED_SOCKS.txt"
 
 echo
 echo "============================================================"
-echo -e "${GREEN}安装完成${NC}"
-echo "------------------------------------------------------------"
-echo "  面板类型:     agent"
-echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
-echo "  Xray 版本:    $(${XRAY_BIN} version 2>/dev/null | head -n1 || echo 未知)"
-echo "  TCP 拥塞:     $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 未知)"
-echo "  Agent 地址:   http://${PUBLIC_IP}:${AGENT_LISTEN_PORT:-$AGENT_PORT}"
-echo "  API Token:    ${AGENT_API_TOKEN}"
-echo "  inbound_id:   1   (共享占位，专属模式也填 1)"
-echo "  公网 IP:      ${PUBLIC_IP}"
-echo "  SOCKS 端口:   ${AGENT_SHARED_PORT:-$SHARED_PORT}  (节点「SOCKS 端口」填这个)"
-echo "  已尝试放行:   ${AGENT_PORT}(API) / ${SHARED_PORT}(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}(专属)"
+echo -e "${GREEN}安装完成 — 可单独使用（无需机器人）${NC}"
 echo "------------------------------------------------------------"
 echo -e "  ${GREEN}Web 面板:     http://${PUBLIC_IP}:${AGENT_PORT}/panel${NC}"
 echo "  面板账号:     ${PANEL_USER}"
 echo "  面板密码:     ${PANEL_PASS}"
+echo "  公网 IP:      ${PUBLIC_IP}"
+echo "  共享 SOCKS:   ${AGENT_SHARED_PORT:-$SHARED_PORT}"
+if [[ -f "${SHARED_SOCKS_FILE}" ]]; then
+  echo "  共享账号:     见 ${SHARED_SOCKS_FILE}"
+  # 打印便于立即使用（不含大段噪音）
+  grep -E '^(user|pass|link)=' "${SHARED_SOCKS_FILE}" 2>/dev/null | sed 's/^/    /' || true
+fi
 echo "------------------------------------------------------------"
-echo "后台「添加节点」时选「极简 Agent」，把上面几项填进去即可。"
-echo "面板与 API 共用 ${AGENT_PORT} 端口；用浏览器访问面板需放行你的 IP。"
-echo "更安全做法：云安全组里把 ${AGENT_PORT} 只放行 Bot 服务器 IP + 你的管理 IP。"
+echo "独立使用：浏览器打开面板 → 入站/账号 → 新增或改共享账号 → 复制 socks5 链接。"
+echo "对接机器人（可选）：面板类型选「极简 Agent」，填下面几项即可。"
+echo "  Agent 地址:   http://${PUBLIC_IP}:${AGENT_LISTEN_PORT:-$AGENT_PORT}"
+echo "  API Token:    ${AGENT_API_TOKEN}"
+echo "  inbound_id:   1"
+echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
+echo "------------------------------------------------------------"
+echo "请放行: ${AGENT_PORT}/tcp(面板) / ${SHARED_PORT}/tcp(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp(专属)"
+echo "安全建议：云安全组把 ${AGENT_PORT} 只放行你的管理 IP（及 Bot 服务器 IP，若使用）。"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
 echo "改用官方最新 Xray: XRAY_KERNEL=official bash install.sh"

@@ -236,7 +236,7 @@ class InboundStore:
             conn.commit()
 
     def ensure_shared_placeholder(self, port: int) -> dict[str, Any]:
-        """保证存在 id=1 的共享占位入站（供 Bot 节点 xui_inbound_id 使用）。"""
+        """保证存在 id=1 的共享 SOCKS 入站（独立使用 / Bot 占位均可）。"""
         existing = self.get(1)
         if existing:
             return existing

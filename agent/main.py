@@ -1,10 +1,11 @@
-"""SOCKS Agent HTTP API —— 响应格式对齐 3X-UI，供 Bot 的 panel_type=agent 调用。"""
+"""SOCKS Agent：本机 Web 面板 + HTTP API（可独立使用，也可对接 Bot）。"""
 from __future__ import annotations
 
 import json
 import logging
 import os
 import secrets
+import string
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import AgentConfig, load_config
+from .local_settings import LocalSettings
 from .store import InboundStore
 from .xrayctl import XrayController
 
@@ -28,6 +30,7 @@ log = logging.getLogger("socks-agent")
 cfg: AgentConfig
 store: InboundStore
 xray: XrayController
+local_settings: LocalSettings
 _stop = threading.Event()
 # xray 启动后的 stats 快照，用于把增量累加到 DB（避免重启后回退）
 _last_stats: dict[str, tuple[int, int]] = {}
@@ -75,19 +78,146 @@ def _normalize_settings(raw: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+# 仅影响 Agent 记账/展示，不进 xray 运行配置
+_META_KEYS = frozenset({"total", "up", "down", "expiryTime", "remark"})
+# 会改变 xray 实际监听/认证的字段
+_XRAY_KEYS = frozenset({
+    "port", "protocol", "enable", "settings", "streamSettings", "sniffing",
+})
+
+
+def _inbound_tag(inb: dict) -> str:
+    return str(inb.get("tag") or f"in-{inb['id']}")
+
+
+def _norm_json_field(val: Any) -> str:
+    if isinstance(val, str):
+        try:
+            obj = json.loads(val) if val else {}
+        except json.JSONDecodeError:
+            return val
+    elif isinstance(val, dict):
+        obj = val
+    else:
+        obj = {}
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def _xray_fields_changed(old: dict, fields: dict) -> bool:
+    """fields 里是否有真正影响 xray 的变更（值相同则不算）。"""
+    for k in _XRAY_KEYS:
+        if k not in fields:
+            continue
+        new_v = fields[k]
+        old_v = old.get(k)
+        if k == "enable":
+            if _parse_enable(new_v) != _parse_enable(old_v):
+                return True
+        elif k == "port":
+            if int(new_v or 0) != int(old_v or 0):
+                return True
+        elif k in ("settings", "streamSettings", "sniffing"):
+            left = _normalize_settings(new_v) if k == "settings" else _norm_json_field(new_v)
+            right = (
+                _normalize_settings(old_v) if k == "settings" else _norm_json_field(old_v)
+            )
+            if left != right:
+                return True
+        else:
+            if str(new_v or "") != str(old_v or ""):
+                return True
+    return False
+
+
 def _apply_xray() -> None:
-    """写完整 Xray 配置并重启（比热加载可靠）。"""
+    """写完整 Xray 配置并重启（热加载失败时的兜底）。"""
     enabled = _enabled_list()
     xray.apply_from_store(enabled)
     ports = sorted({int(i["port"]) for i in enabled if i.get("port")})
     log.info("Xray reloaded: %d inbounds, ports=%s", len(enabled), ports)
 
 
-def _persist_and_hot(inb: dict, *, live_add: bool) -> None:
-    """落盘并全量重启 Xray（live_add 参数保留兼容，已忽略）。"""
-    del inb, live_add
+def _sync_config_disk() -> None:
+    """只把当前 enabled 入站写到 config.json，不重启。"""
+    xray.write_config_only(_enabled_list())
+
+
+def _apply_live_or_restart(*, add: Optional[dict] = None, remove_tag: Optional[str] = None,
+                          replace_old_tag: Optional[str] = None, replace_inb: Optional[dict] = None,
+                          ) -> None:
+    """先写盘，再尝试热加载；失败则全量重启。"""
+    _sync_config_disk()
+    try:
+        if replace_inb is not None and replace_old_tag is not None:
+            xray.replace_inbound_live(replace_old_tag, replace_inb)
+            return
+        if remove_tag is not None:
+            xray.remove_inbound_live(remove_tag)
+        if add is not None and add.get("enable"):
+            xray.add_inbound_live(add)
+        return
+    except Exception as e:  # noqa: BLE001
+        log.warning("xray live apply failed, fallback restart: %s", e)
     _apply_xray()
 
+
+def _persist_add(inb: dict) -> None:
+    """新建入站：热加；未启用则只写盘。"""
+    if not inb.get("enable"):
+        _sync_config_disk()
+        return
+    _apply_live_or_restart(add=inb)
+
+
+def _persist_remove(inb: dict) -> None:
+    """删除入站：热删。"""
+    tag = _inbound_tag(inb)
+    if inb.get("enable"):
+        _apply_live_or_restart(remove_tag=tag)
+    else:
+        _sync_config_disk()
+
+
+def _persist_update(old: dict, updated: dict, fields: dict) -> None:
+    """按变更类型：仅元数据跳过 xray；否则热更新/替换，失败重启。"""
+    if not _xray_fields_changed(old, fields):
+        touched = sorted(set(fields) & _META_KEYS) or ["noop"]
+        log.info(
+            "inbound %s metadata-only update (%s), skip xray reload",
+            updated.get("id"), ",".join(touched),
+        )
+        return
+
+    old_en = _parse_enable(old.get("enable"))
+    new_en = _parse_enable(updated.get("enable"))
+    old_tag = _inbound_tag(old)
+
+    # 仅开关：关→热删；开→热加（括号避免 & / == 优先级误读）
+    only_enable = (set(fields.keys()) & _XRAY_KEYS) == {"enable"}
+    if only_enable:
+        if old_en and not new_en:
+            _apply_live_or_restart(remove_tag=old_tag)
+            return
+        if not old_en and new_en:
+            _apply_live_or_restart(add=updated)
+            return
+
+    # 端口/账号/协议等：先删后加；若最终未启用则只删
+    if not new_en:
+        if old_en:
+            _apply_live_or_restart(remove_tag=old_tag)
+        else:
+            _sync_config_disk()
+        return
+    _apply_live_or_restart(replace_old_tag=old_tag, replace_inb=updated)
+
+
+def _persist_and_hot(inb: dict, *, live_add: bool) -> None:
+    """兼容旧调用：按 live_add 视为新增或删除后的同步。"""
+    if live_add:
+        _persist_add(inb)
+    else:
+        _persist_remove(inb)
 
 
 def _sync_traffic_once() -> None:
@@ -130,7 +260,7 @@ def _enforce_once() -> None:
             updated = store.update(int(inb["id"]), {"enable": False})
             if updated:
                 try:
-                    _persist_and_hot(updated, live_add=False)
+                    _persist_update(inb, updated, {"enable": False})
                 except Exception as e:  # noqa: BLE001
                     log.exception("auto-disable apply failed: %s", e)
 
@@ -157,13 +287,86 @@ def _bg_loop() -> None:
         _stop.wait(1.0)
 
 
+def _gen_secret(n: int = 10) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+def _seed_shared_socks_if_needed() -> Optional[tuple[dict, dict, dict]]:
+    """独立使用：共享入站若无账号，自动生成一组可登录凭据。
+
+    返回 (old, updated, fields)；无需播种时返回 None。
+    """
+    inb = store.get(1)
+    if inb is None:
+        return None
+    if local_settings.get("shared_seeded"):
+        return None
+    try:
+        settings = json.loads(inb.get("settings") or "{}")
+    except json.JSONDecodeError:
+        settings = {}
+    accounts = settings.get("accounts") or settings.get("users") or []
+    if accounts:
+        local_settings.set("shared_seeded", True)
+        return None
+    user = "u" + _gen_secret(8).lower()
+    password = _gen_secret(12)
+    new_settings = {
+        "auth": "password",
+        "accounts": [{"user": user, "pass": password}],
+        "udp": False,
+        "ip": "127.0.0.1",
+    }
+    settings_json = json.dumps(new_settings, ensure_ascii=False)
+    fields = {
+        "settings": settings_json,
+        "remark": "shared-socks",
+        "enable": True,
+    }
+    updated = store.update(1, fields)
+    if updated is None:
+        return None
+    local_settings.set("shared_seeded", True)
+    host = resolve_public_ip() or "YOUR_IP"
+    cred_path = Path(cfg.data_dir) / "SHARED_SOCKS.txt"
+    try:
+        cred_path.write_text(
+            f"host={host}\n"
+            f"port={cfg.shared_port}\n"
+            f"user={user}\n"
+            f"pass={password}\n"
+            f"link=socks5://{user}:{password}@{host}:{cfg.shared_port}\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.warning("write SHARED_SOCKS.txt failed: %s", e)
+    log.info(
+        "Standalone shared SOCKS ready: port=%s user=%s (see %s)",
+        cfg.shared_port, user, cred_path,
+    )
+    return inb, updated, fields
+
+
+def resolve_public_ip() -> str:
+    ip = (local_settings.get("public_ip") or "").strip()
+    if ip:
+        return ip
+    return (cfg.public_ip or "").strip()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global cfg, store, xray
+    global cfg, store, xray, local_settings
     cfg = load_config()
     if not cfg.api_token:
-        log.warning("AGENT_API_TOKEN is empty — all requests will be rejected")
+        log.warning(
+            "AGENT_API_TOKEN is empty — Bot/API Bearer 将被拒绝；Web 面板仍可独立使用"
+        )
     Path(cfg.data_dir).mkdir(parents=True, exist_ok=True)
+    local_settings = LocalSettings(str(Path(cfg.data_dir) / "settings.json"))
+    if cfg.public_ip and not local_settings.get("public_ip"):
+        local_settings.set("public_ip", cfg.public_ip)
     store = InboundStore(str(Path(cfg.data_dir) / "agent.db"))
     xray = XrayController(
         xray_bin=cfg.xray_bin,
@@ -171,8 +374,19 @@ async def lifespan(app: FastAPI):
         api_addr=cfg.xray_api_addr,
         service_name=cfg.xray_service,
     )
-    # 确保共享占位入站存在，并同步到 Xray
     store.ensure_shared_placeholder(cfg.shared_port)
+    with _ops_lock:
+        seeded = _seed_shared_socks_if_needed()
+        if seeded:
+            old, updated, fields = seeded
+            try:
+                _persist_update(old, updated, fields)
+            except Exception as e:  # noqa: BLE001
+                log.exception("apply seeded shared socks failed: %s", e)
+                try:
+                    _apply_xray()
+                except Exception:  # noqa: BLE001
+                    log.exception("fallback reload after seed failed")
     try:
         xray.sync_live_from_store(_enabled_list())
     except Exception as e:  # noqa: BLE001
@@ -181,7 +395,7 @@ async def lifespan(app: FastAPI):
     t = threading.Thread(target=_bg_loop, name="agent-bg", daemon=True)
     t.start()
     log.info(
-        "SOCKS Agent ready on %s:%d shared_port=%d",
+        "SOCKS Agent ready on %s:%d shared_port=%d panel=/panel standalone_ok=1",
         cfg.listen_host, cfg.listen_port, cfg.shared_port,
     )
     yield
@@ -252,7 +466,7 @@ async def add_inbound(request: Request):
                 stream_settings=body.get("streamSettings") or "{}",
                 sniffing=body.get("sniffing"),
             )
-            _persist_and_hot(inb, live_add=True)
+            _persist_add(inb)
         return ok(inb)
     except Exception as e:  # noqa: BLE001
         log.exception("add inbound failed")
@@ -280,7 +494,7 @@ async def update_inbound(inbound_id: int, request: Request):
             updated = store.update(inbound_id, fields)
             if updated is None:
                 return JSONResponse(fail(f"inbound {inbound_id} not found"))
-            _persist_and_hot(updated, live_add=bool(updated.get("enable")))
+            _persist_update(old, updated, fields)
         return ok(updated)
     except Exception as e:  # noqa: BLE001
         log.exception("update inbound failed")
@@ -314,10 +528,19 @@ def del_inbound(inbound_id: int):
                     },
                 )
                 if cleared:
-                    _persist_and_hot(cleared, live_add=True)
+                    # 占位：settings 变空账号，需热替换
+                    _persist_update(old, cleared, {
+                        "settings": cleared.get("settings"),
+                        "enable": True,
+                        "total": 0,
+                        "up": 0,
+                        "down": 0,
+                        "expiryTime": 0,
+                        "remark": "shared-placeholder",
+                    })
                 return ok(cleared)
             store.delete(inbound_id)
-            _persist_and_hot(old, live_add=False)
+            _persist_remove(old)
         return ok(True)
     except Exception as e:  # noqa: BLE001
         log.exception("del inbound failed")
