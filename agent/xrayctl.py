@@ -226,7 +226,9 @@ class XrayController:
         self.apply_from_store(enabled_inbounds, force_restart=True)
 
     def _run_api(self, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-        cmd = [self.xray_bin, "api", *args, f"--server={self.api_addr}"]
+        # --server 必须在位置参数（如 rmi 的 tag）之前，否则新版 xray 会忽略
+        # 并默认 dial 127.0.0.1:8080，热删失败后每次回退全量重启。
+        cmd = [self.xray_bin, "api", f"--server={self.api_addr}", *args]
         return subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )

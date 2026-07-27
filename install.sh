@@ -26,6 +26,31 @@ error() { echo -e "${RED}[ERR ]${NC} $*" >&2; exit 1; }
 
 [[ "$(id -u)" -eq 0 ]] || error "请用 root 运行"
 
+# 安装前统一上海时区，避免日志/到期与北京时间错位
+set_timezone_shanghai() {
+  local target="Asia/Shanghai"
+  local current=""
+  if command -v timedatectl >/dev/null 2>&1; then
+    current="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+    if [[ "${current}" == "${target}" ]]; then
+      info "时区已是 ${target}，跳过"
+      return 0
+    fi
+    if timedatectl set-timezone "${target}" 2>/dev/null; then
+      info "时区已设为 ${target}"
+      return 0
+    fi
+    warn "timedatectl 设置时区失败，尝试手动写入..."
+  fi
+  if [[ -f "/usr/share/zoneinfo/${target}" ]]; then
+    ln -sf "/usr/share/zoneinfo/${target}" /etc/localtime
+    echo "${target}" > /etc/timezone 2>/dev/null || true
+    info "时区已设为 ${target}"
+  else
+    warn "未找到 zoneinfo/${target}，跳过时区设置"
+  fi
+}
+
 AGENT_HOME="${AGENT_HOME:-/opt/socks-agent}"
 AGENT_PORT="${AGENT_PORT:-9100}"
 SHARED_PORT="${SHARED_PORT:-1080}"
@@ -127,6 +152,8 @@ choose_xray_kernel() {
 }
 
 parse_args "$@"
+
+set_timezone_shanghai
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 BUNDLE_DIR=""
