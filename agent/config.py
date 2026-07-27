@@ -19,8 +19,8 @@ class AgentConfig:
     shared_port: int = 1080
     # 公网 IP（复制链接用；也可在面板里改，写入 settings.json）
     public_ip: str = ""
-    traffic_sync_seconds: int = 20
-    enforce_seconds: int = 30
+    traffic_sync_seconds: int = 10
+    enforce_seconds: int = 10
     # Web 面板
     panel_enable: bool = True
     panel_user: str = ""
@@ -48,8 +48,8 @@ def load_config() -> AgentConfig:
         xray_service=os.getenv("XRAY_SERVICE", "xray"),
         shared_port=int(os.getenv("AGENT_SHARED_PORT", "1080")),
         public_ip=os.getenv("AGENT_PUBLIC_IP", "").strip(),
-        traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "20")),
-        enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "30")),
+        traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "10")),
+        enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "10")),
         panel_enable=_env_bool("PANEL_ENABLE", True),
         panel_user=os.getenv("PANEL_USER", "").strip(),
         panel_pass=os.getenv("PANEL_PASS", "").strip(),

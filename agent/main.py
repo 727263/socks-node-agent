@@ -245,6 +245,20 @@ def _sync_traffic_once() -> None:
         store.add_traffic_delta(int(inb["id"]), delta_up, delta_down)
 
 
+def _disable_inbound(inb: dict, reason: str) -> None:
+    """写库关闭并热删；失败保持 disable，由 reconcile 重试，避免库关内核仍通。"""
+    iid = int(inb["id"])
+    log.info("Auto-disable inbound %s (%s)", iid, reason)
+    with _ops_lock:
+        updated = store.update(iid, {"enable": False})
+        if not updated:
+            return
+        try:
+            _persist_update(inb, updated, {"enable": False})
+        except Exception as e:  # noqa: BLE001
+            log.exception("auto-disable apply failed inbound=%s: %s", iid, e)
+
+
 def _enforce_once() -> None:
     """流量超限 / 到期 → 自动 disable（对齐 3X-UI 行为）。"""
     now_ms = int(time.time() * 1000)
@@ -259,14 +273,30 @@ def _enforce_once() -> None:
         if not (over_quota or expired):
             continue
         reason = "quota" if over_quota else "expiry"
-        log.info("Auto-disable inbound %s (%s)", inb["id"], reason)
+        _disable_inbound(inb, reason)
+
+
+def _reconcile_disabled_once() -> None:
+    """DB 已关但端口仍在听 → 再热删，避免超限后继续跑很久。"""
+    for inb in store.list_all():
+        if inb.get("enable"):
+            continue
+        # 占位共享入站 id=1 不按超限逻辑强删
+        if int(inb.get("id") or 0) == 1:
+            continue
+        port = int(inb.get("port") or 0)
+        if port <= 0 or not xray._port_open(port):
+            continue
+        tag = _inbound_tag(inb)
+        log.warning(
+            "disabled inbound %s still listening on %s, force remove",
+            inb.get("id"), port,
+        )
         with _ops_lock:
-            updated = store.update(int(inb["id"]), {"enable": False})
-            if updated:
-                try:
-                    _persist_update(inb, updated, {"enable": False})
-                except Exception as e:  # noqa: BLE001
-                    log.exception("auto-disable apply failed: %s", e)
+            try:
+                _apply_live_or_restart(remove_tag=tag)
+            except Exception as e:  # noqa: BLE001
+                log.exception("reconcile remove inbound=%s failed: %s", inb.get("id"), e)
 
 
 def _bg_loop() -> None:
@@ -279,12 +309,15 @@ def _bg_loop() -> None:
         if now >= t_next:
             try:
                 _sync_traffic_once()
+                # 流量刚写入立刻检查，少拖一整轮 enforce 间隔
+                _enforce_once()
             except Exception as e:  # noqa: BLE001
                 log.exception("traffic sync: %s", e)
             t_next = now + traffic_every
         if now >= e_next:
             try:
                 _enforce_once()
+                _reconcile_disabled_once()
             except Exception as e:  # noqa: BLE001
                 log.exception("enforce: %s", e)
             e_next = now + enforce_every
