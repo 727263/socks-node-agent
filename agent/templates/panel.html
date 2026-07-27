@@ -206,7 +206,6 @@
     <button class="nav-btn" data-tab="inbounds" onclick="showTab('inbounds')">入站 / 账号</button>
     <button class="nav-btn" data-tab="xray" onclick="showTab('xray')">Xray 内核</button>
     <button class="nav-btn" data-tab="logs" onclick="showTab('logs')">日志</button>
-    <button class="nav-btn" data-tab="ops" onclick="showTab('ops')">运维</button>
     <button class="nav-btn" data-tab="settings" onclick="showTab('settings')">设置</button>
     <div class="who">
       <div id="who">{{ user }}</div>
@@ -252,6 +251,13 @@
         <button class="btn-sm" onclick="openVersions()">切换版本</button>
       </h2>
       <div id="xrayInfo" class="muted">加载中...</div>
+      <div class="ops" style="margin-top:18px">
+        <button onclick="ops('restart-xray','重启 xray')">重启 xray</button>
+        <button onclick="ops('reload','从数据库全量重载')">全量重载并重启</button>
+        <button onclick="ops('restart-agent','重启 agent')">重启 agent</button>
+        <button onclick="firewall()">防火墙检查</button>
+      </div>
+      <div id="fwResult" class="muted" style="margin-top:12px"></div>
     </section>
 
     <section class="panel" id="tab-logs">
@@ -263,17 +269,6 @@
         </span>
       </h2>
       <pre class="log" id="logBox">选择服务查看日志...</pre>
-    </section>
-
-    <section class="panel" id="tab-ops">
-      <h2>运维操作</h2>
-      <div class="ops">
-        <button onclick="ops('restart-xray','重启 xray')">重启 xray</button>
-        <button onclick="ops('reload','从数据库全量重载')">全量重载并重启</button>
-        <button onclick="ops('restart-agent','重启 agent')">重启 agent</button>
-        <button onclick="firewall()">防火墙检查</button>
-      </div>
-      <div id="fwResult" class="muted" style="margin-top:12px"></div>
     </section>
 
     <section class="panel" id="tab-settings">
