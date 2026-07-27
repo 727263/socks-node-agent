@@ -254,10 +254,12 @@ class XrayController:
     def add_inbound_live(self, inb: dict[str, Any], *, wait_port: bool = True) -> None:
         """通过 xray api adi 热加入站（与 3X-UI HandlerService.AddInbound 同类）。"""
         payload = inbound_to_xray(inb, for_api=True)
+        # adi 用 DecodeJSONConfig，只认 {"inbounds":[...]}；单对象会报 no valid inbound found
+        wrapper = {"inbounds": [payload]}
         with tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False, encoding="utf-8"
         ) as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(wrapper, f, ensure_ascii=False)
             tmp_path = f.name
         try:
             r = self._run_api(["adi", tmp_path])
