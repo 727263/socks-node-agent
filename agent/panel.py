@@ -91,10 +91,14 @@ def panel_page(request: Request):
     if not _logged_in(request):
         return RedirectResponse("/panel/login", status_code=302)
     cfg = _main().cfg
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         "panel.html",
         {"request": request, "user": request.session.get("user"), "shared_port": cfg.shared_port},
     )
+    # 避免浏览器死守旧 HTML，更新面板后刷新看不到
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 # ---------------- 面板接口（会话鉴权） ----------------
