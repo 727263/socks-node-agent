@@ -110,8 +110,12 @@ def api_overview(request: Request):
         xray_service=cfg.xray_service,
         agent_service=cfg.agent_service,
     )
+    rows = m.store.list_all()
     data["shared_port"] = cfg.shared_port
-    data["inbound_count"] = len(m.store.list_all())
+    data["inbound_count"] = len(rows)
+    data["inbound_enabled"] = sum(1 for r in rows if r.get("enable"))
+    data["proxy_up"] = sum(int(r.get("up") or 0) for r in rows)
+    data["proxy_down"] = sum(int(r.get("down") or 0) for r in rows)
     data["public_ip"] = m.resolve_public_ip()
     data["standalone"] = True
     return _ok(data)
