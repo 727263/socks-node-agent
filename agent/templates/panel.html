@@ -181,6 +181,7 @@
     .toast.show { opacity: 1; }
     .muted { color: var(--muted); font-size: 12px; }
     .hint { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .text-danger { color: var(--danger); font-weight: 600; }
     @media (max-width: 900px) {
       body { flex-direction: column; }
       .side {
@@ -509,14 +510,23 @@ function renderInbounds() {
     const shared = inb.id === 1;
     const used = Number(inb.up || 0) + Number(inb.down || 0);
     const total = Number(inb.total || 0);
+    const overQuota = total > 0 && used >= total;
+    const expMs = Number(inb.expiryTime || 0);
+    const expired = expMs > 0 && expMs <= Date.now();
+    const trafficHtml = overQuota
+      ? `<span class="text-danger">${fmtBytes(used)}</span> / ${fmtBytes(total)}`
+      : `${fmtBytes(used)} / ${total ? fmtBytes(total) : '不限'}`;
+    const expiryHtml = expired
+      ? `<span class="text-danger">${fmtExpiry(expMs)}</span>`
+      : fmtExpiry(expMs);
     return `<tr>
       <td class="mono">${inb.id}</td>
       <td>${esc(inb.remark||'-')}${shared?' <span class="badge warn">共享</span>':''}</td>
       <td class="mono">${inb.port}</td>
       <td class="mono">${esc(user)}</td>
       <td class="mono">${esc(pass)}</td>
-      <td>${fmtBytes(used)} / ${total ? fmtBytes(total) : '不限'}</td>
-      <td>${fmtExpiry(inb.expiryTime)}</td>
+      <td>${trafficHtml}</td>
+      <td>${expiryHtml}</td>
       <td><label class="switch"><input type="checkbox" ${inb.enable?'checked':''} onchange="toggle(${inb.id},this.checked)"><span class="slider"></span></label></td>
       <td>
         <button class="btn-sm" onclick="openLinkModal(${inb.id})">复制</button>
