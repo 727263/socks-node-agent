@@ -105,6 +105,36 @@ class InboundStore:
             rows = conn.execute("SELECT port FROM inbounds").fetchall()
         return {int(r["port"]) for r in rows}
 
+    @staticmethod
+    def _next_reuse_id(conn: sqlite3.Connection) -> int:
+        """最小空缺 id，从 2 起（1 留给共享占位）；无空缺则 max+1。"""
+        rows = conn.execute("SELECT id FROM inbounds ORDER BY id").fetchall()
+        used = {int(r["id"]) for r in rows}
+        candidate = 2
+        while candidate in used:
+            candidate += 1
+        return candidate
+
+    @staticmethod
+    def _sync_sqlite_sequence(conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM inbounds").fetchone()
+        max_id = int(row["m"] if row else 0)
+        if max_id <= 0:
+            return
+        try:
+            cur = conn.execute(
+                "UPDATE sqlite_sequence SET seq = ? WHERE name = 'inbounds'",
+                (max_id,),
+            )
+            if cur.rowcount == 0:
+                conn.execute(
+                    "INSERT INTO sqlite_sequence(name, seq) VALUES ('inbounds', ?)",
+                    (max_id,),
+                )
+        except sqlite3.OperationalError:
+            # 尚未出现 sqlite_sequence 表时忽略；显式 id 插入不依赖它
+            pass
+
     def add(
         self,
         *,
@@ -130,14 +160,17 @@ class InboundStore:
         )
         now = self._now_ms()
         with self._lock, self._conn() as conn:
-            cur = conn.execute(
+            inbound_id = self._next_reuse_id(conn)
+            tag = f"in-{inbound_id}"
+            conn.execute(
                 """
                 INSERT INTO inbounds (
-                    port, protocol, remark, enable, total, up, down, expiry_time,
+                    id, port, protocol, remark, enable, total, up, down, expiry_time,
                     settings, stream_settings, sniffing, tag, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    inbound_id,
                     int(port),
                     protocol or "socks",
                     remark or "",
@@ -147,16 +180,12 @@ class InboundStore:
                     settings_raw,
                     stream_settings or "{}",
                     sniff_raw,
-                    f"tmp-{now}",
+                    tag,
                     now,
                     now,
                 ),
             )
-            inbound_id = int(cur.lastrowid)
-            tag = f"in-{inbound_id}"
-            conn.execute(
-                "UPDATE inbounds SET tag = ? WHERE id = ?", (tag, inbound_id)
-            )
+            self._sync_sqlite_sequence(conn)
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM inbounds WHERE id = ?", (inbound_id,)
@@ -264,5 +293,9 @@ class InboundStore:
                     now,
                 ),
             )
+            conn.commit()
+        # 对齐自增计数，避免之后 add() 跳过已占用的低位
+        with self._lock, self._conn() as conn:
+            self._sync_sqlite_sequence(conn)
             conn.commit()
         return self.get(1)  # type: ignore[return-value]

@@ -122,6 +122,12 @@ def api_overview(request: Request):
     data["proxy_down"] = sum(int(r.get("down") or 0) for r in rows)
     data["public_ip"] = m.resolve_public_ip()
     data["standalone"] = True
+    try:
+        from . import read_version
+
+        data["agent_version"] = read_version()
+    except Exception:  # noqa: BLE001
+        data["agent_version"] = ""
     return _ok(data)
 
 

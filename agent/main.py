@@ -512,6 +512,39 @@ def health():
     return ok({"status": "ok", "panel": "agent"})
 
 
+@app.get("/api/agent/info", dependencies=[Depends(require_token)])
+def agent_info():
+    from . import upgrade as agent_upgrade
+
+    return ok(agent_upgrade.info_payload())
+
+
+@app.post("/api/agent/upgrade", dependencies=[Depends(require_token)])
+async def agent_upgrade(request: Request):
+    """从 GitHub 拉取新版本并重启 Agent 服务（保留 data/ 与 agent.env）。"""
+    from . import upgrade as agent_upgrade
+
+    body: dict = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    ref = (body.get("ref") or "").strip() or None
+    repo = (body.get("repo") or "").strip() or None
+    try:
+        result = agent_upgrade.perform_upgrade(
+            repo=repo,
+            ref=ref,
+            service=cfg.agent_service or "socks-agent",
+        )
+        return ok(result, msg="upgrade scheduled")
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent upgrade failed")
+        return JSONResponse(fail(str(e)))
+
+
 @app.get("/api/inbounds/list", dependencies=[Depends(require_token)])
 def list_inbounds():
     _sync_traffic_once()
@@ -562,6 +595,9 @@ async def update_inbound(inbound_id: int, request: Request):
                 if k in body:
                     if k == "settings":
                         fields[k] = _normalize_settings(body[k])
+                    elif k == "remark" and not (body.get(k) or "").strip():
+                        # 空备注不覆盖：避免机器人更新流量/到期时把 bot:u... 清掉
+                        continue
                     else:
                         fields[k] = body[k]
             updated = store.update(inbound_id, fields)

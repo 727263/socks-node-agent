@@ -478,7 +478,7 @@ async function loadOverview() {
       </div>`;
 
     $('xrayInfo').innerHTML = `版本 <b>${esc(o.xray.version||'未知')}</b>，状态 <span class="badge ${xrOk?'ok':'bad'}">${o.xray.status}</span>，运行 ${esc(o.xray.uptime_h)}；Agent <span class="badge ${o.agent.status==='active'?'ok':'bad'}">${o.agent.status}</span> 运行 ${esc(o.agent.uptime_h)}`;
-    $('dashExtra').innerHTML = `公网 IP <span class="mono">${esc(o.public_ip||hostIP)}</span> · 共享 SOCKS <span class="mono">${o.shared_port}</span> · 入站 ${o.inbound_enabled||0}/${o.inbound_count||0} 启用 · 可独立使用，无需机器人`;
+    $('dashExtra').innerHTML = `公网 IP <span class="mono">${esc(o.public_ip||hostIP)}</span> · 共享 SOCKS <span class="mono">${o.shared_port}</span> · 入站 ${o.inbound_enabled||0}/${o.inbound_count||0} 启用 · Agent <span class="mono">${esc(o.agent_version||'-')}</span> · 可独立使用，无需机器人`;
     if (o.public_ip) hostIP = o.public_ip;
     if ($('set_public_ip') && !$('set_public_ip').dataset.touched) {
       $('set_public_ip').value = o.public_ip || '';

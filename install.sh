@@ -462,6 +462,7 @@ mkdir -p "${AGENT_HOME}/data" "${AGENT_HOME}/agent"
 info "部署 Agent 文件 ..."
 cp -a "${BUNDLE_DIR}/agent/." "${AGENT_HOME}/agent/"
 cp -f "${BUNDLE_DIR}/requirements.txt" "${AGENT_HOME}/requirements.txt"
+[[ -f "${BUNDLE_DIR}/VERSION" ]] && cp -f "${BUNDLE_DIR}/VERSION" "${AGENT_HOME}/VERSION"
 [[ -f "${BUNDLE_DIR}/uninstall.sh" ]] && cp -f "${BUNDLE_DIR}/uninstall.sh" "${AGENT_HOME}/uninstall.sh"
 
 VENV_DIR="${AGENT_HOME}/.venv"
