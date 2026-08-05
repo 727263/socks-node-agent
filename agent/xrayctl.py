@@ -73,6 +73,12 @@ def build_full_config(enabled_inbounds: list[dict[str, Any]], api_port: int = 10
         "policy": {
             "levels": {
                 "0": {
+                    # 公开 SOCKS 被滥用时，空闲连接和每连接缓冲会堆到吃光内存
+                    "handshake": 4,
+                    "connIdle": 300,
+                    "uplinkOnly": 2,
+                    "downlinkOnly": 5,
+                    "bufferSize": 512,
                     "statsUserUplink": True,
                     "statsUserDownlink": True,
                 }

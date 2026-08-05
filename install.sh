@@ -64,6 +64,9 @@ SKIP_BBR="${SKIP_BBR:-0}"
 XRAY_KERNEL="${XRAY_KERNEL:-}"
 VAXILU_XUI_REPO="${VAXILU_XUI_REPO:-vaxilu/x-ui}"
 VAXILU_XUI_TAG="${VAXILU_XUI_TAG:-}"
+# Xray 资源上限：FD 数决定并发连接天花板，MemoryMax 保证整机不被拖死
+XRAY_NOFILE="${XRAY_NOFILE:-65536}"
+XRAY_MEM_PERCENT="${XRAY_MEM_PERCENT:-70}"
 
 usage() {
   cat <<'EOF'
@@ -363,11 +366,38 @@ Type=simple
 ExecStart=${xray_bin} run -config ${XRAY_CONFIG}
 Restart=on-failure
 RestartSec=3
-LimitNOFILE=1048576
+LimitNOFILE=${XRAY_NOFILE}
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# 官方内核的 xray.service 由 xray-install 维护，用 drop-in 才不会被升级覆盖
+write_xray_limits() {
+  local dir="/etc/systemd/system/${XRAY_SERVICE}.service.d"
+  local mem_bytes=""
+  if [[ "${XRAY_MEM_PERCENT}" =~ ^[0-9]+$ ]] && [[ "${XRAY_MEM_PERCENT}" -gt 0 ]]; then
+    mem_bytes="$(awk -v p="${XRAY_MEM_PERCENT}" \
+      '/^MemTotal:/ {printf "%d", $2 * 1024 / 100 * p}' /proc/meminfo 2>/dev/null || true)"
+  else
+    warn "XRAY_MEM_PERCENT=${XRAY_MEM_PERCENT} 无效，跳过内存上限"
+  fi
+  mkdir -p "${dir}"
+  {
+    echo "# socks-agent install.sh: 防止被滥用时打爆整机"
+    echo "[Service]"
+    echo "LimitNOFILE=${XRAY_NOFILE}"
+    if [[ -n "${mem_bytes}" && "${mem_bytes}" -gt 0 ]]; then
+      echo "MemoryAccounting=yes"
+      echo "MemoryMax=${mem_bytes}"
+    fi
+  } > "${dir}/limits.conf"
+  if [[ -n "${mem_bytes}" && "${mem_bytes}" -gt 0 ]]; then
+    info "Xray 资源上限: NOFILE=${XRAY_NOFILE} MemoryMax=$((mem_bytes / 1024 / 1024)) MiB (${XRAY_MEM_PERCENT}% 内存)"
+  else
+    info "Xray 资源上限: NOFILE=${XRAY_NOFILE}（未设内存上限）"
+  fi
 }
 
 install_xray_from_vaxilu_xui() {
@@ -457,6 +487,8 @@ case "${XRAY_KERNEL}" in
     error "未知 XRAY_KERNEL=${XRAY_KERNEL}，可用: xui / official"
     ;;
 esac
+
+write_xray_limits
 
 mkdir -p "${AGENT_HOME}/data" "${AGENT_HOME}/agent"
 info "部署 Agent 文件 ..."
@@ -578,7 +610,7 @@ Environment=PYTHONPATH=${AGENT_HOME}
 ExecStart=${AGENT_HOME}/.venv/bin/python -m agent.main
 Restart=on-failure
 RestartSec=3
-LimitNOFILE=1048576
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
@@ -700,6 +732,7 @@ echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
 echo "------------------------------------------------------------"
 echo "请放行: ${AGENT_PORT}/tcp(面板) / ${SHARED_PORT}/tcp(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp(专属)"
 echo "安全建议：云安全组把 ${AGENT_PORT} 只放行你的管理 IP（及 Bot 服务器 IP，若使用）。"
+echo "Xray 上限: NOFILE=${XRAY_NOFILE} 内存 ${XRAY_MEM_PERCENT}%（调整: XRAY_NOFILE=131072 XRAY_MEM_PERCENT=80 bash install.sh）"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
 echo "改用旧版 XUI 内核: XRAY_KERNEL=xui bash install.sh"
