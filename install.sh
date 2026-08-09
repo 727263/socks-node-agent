@@ -54,6 +54,8 @@ set_timezone_shanghai() {
 AGENT_HOME="${AGENT_HOME:-/opt/socks-agent}"
 AGENT_PORT="${AGENT_PORT:-9100}"
 SHARED_PORT="${SHARED_PORT:-1080}"
+# 默认关闭共享 SOCKS，避免 1080 被扫/滥用；需要时 SHARED_ENABLE=1
+SHARED_ENABLE="${SHARED_ENABLE:-0}"
 PORT_RANGE_START="${PORT_RANGE_START:-20000}"
 PORT_RANGE_END="${PORT_RANGE_END:-65000}"
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
@@ -67,6 +69,10 @@ VAXILU_XUI_TAG="${VAXILU_XUI_TAG:-}"
 # Xray 资源上限：FD 数决定并发连接天花板，MemoryMax 保证整机不被拖死
 XRAY_NOFILE="${XRAY_NOFILE:-65536}"
 XRAY_MEM_PERCENT="${XRAY_MEM_PERCENT:-70}"
+# 面板/API 来源 IP 白名单（逗号分隔）；空则尝试用当前 SSH 客户端 IP
+PANEL_ALLOW_IP="${PANEL_ALLOW_IP:-}"
+# 节点公网 IP（复制链接用）；空则自动探测
+AGENT_PUBLIC_IP="${AGENT_PUBLIC_IP:-}"
 
 usage() {
   cat <<'EOF'
@@ -78,6 +84,10 @@ usage() {
 环境变量:
   XRAY_KERNEL=xui|official      与 --kernel 相同（curl 管道安装时用）
   SKIP_BBR=1                      跳过 TCP BBR 拥塞控制优化
+  SHARED_ENABLE=1                 启用共享 SOCKS（默认关闭）
+  PANEL_ALLOW_IP=1.2.3.4,5.6.7.8  仅允许这些 IP 访问面板/API
+  AGENT_PUBLIC_IP=x.x.x.x         节点公网 IP（默认自动探测）
+  SKIP_FIREWALL=1                 跳过防火墙配置
 
 内核:
   official  XTLS 官方最新 Xray（默认，xray-install）
@@ -561,25 +571,73 @@ gen_secret() {
 }
 
 ENV_FILE="${AGENT_HOME}/agent.env"
+# 命令行/环境变量优先于已有 agent.env
+_OVERRIDE_PANEL_ALLOW_IP="${PANEL_ALLOW_IP-}"
+_OVERRIDE_PUBLIC_IP="${AGENT_PUBLIC_IP-}"
+_OVERRIDE_SHARED_ENABLE="${SHARED_ENABLE-}"
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   info "沿用已有配置（${ENV_FILE}）"
 fi
+[[ -n "${_OVERRIDE_PANEL_ALLOW_IP}" ]] && PANEL_ALLOW_IP="${_OVERRIDE_PANEL_ALLOW_IP}"
+[[ -n "${_OVERRIDE_PUBLIC_IP}" ]] && AGENT_PUBLIC_IP="${_OVERRIDE_PUBLIC_IP}"
+[[ -n "${_OVERRIDE_SHARED_ENABLE}" ]] && SHARED_ENABLE="${_OVERRIDE_SHARED_ENABLE}"
 # 缺失项才生成，已有值沿用（升级不改 Token / 面板密码）
 AGENT_API_TOKEN="${AGENT_API_TOKEN:-$(gen_secret 24)}"
 PANEL_USER="${PANEL_USER:-admin}"
 PANEL_PASS="${PANEL_PASS:-$(gen_secret 6)}"
 PANEL_SECRET="${PANEL_SECRET:-$(gen_secret 16)}"
-PUBLIC_IP="$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo '')"
+SHARED_ENABLE="${SHARED_ENABLE:-0}"
+
+detect_public_ip() {
+  curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null \
+    || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null \
+    || curl -4 -fsS --max-time 5 api.ipify.org 2>/dev/null \
+    || true
+}
+
+detect_ssh_client_ip() {
+  local ip=""
+  if [[ -n "${SSH_CLIENT:-}" ]]; then
+    ip="${SSH_CLIENT%% *}"
+  elif [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ip="${SSH_CONNECTION%% *}"
+  fi
+  # 粗过滤
+  if [[ "${ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "${ip}" == *:* ]]; then
+    echo "${ip}"
+  fi
+}
+
+PUBLIC_IP="$(detect_public_ip)"
 AGENT_PUBLIC_IP="${AGENT_PUBLIC_IP:-${PUBLIC_IP}}"
+if [[ -z "${AGENT_PUBLIC_IP}" ]]; then
+  warn "未能自动探测公网 IP，请之后在面板设置里填写"
+else
+  info "节点公网 IP: ${AGENT_PUBLIC_IP}"
+fi
+
+# 面板白名单：优先已有/环境变量；否则用当前 SSH 客户端 IP
+if [[ -z "${PANEL_ALLOW_IP}" ]]; then
+  PANEL_ALLOW_IP="$(detect_ssh_client_ip)"
+fi
+if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+  info "面板/API 仅允许来源 IP: ${PANEL_ALLOW_IP}（改: PANEL_ALLOW_IP=ip1,ip2 bash install.sh）"
+else
+  warn "未检测到 PANEL_ALLOW_IP / SSH 客户端 IP — 面板将不对来源 IP 做限制（不安全）"
+  warn "建议重装时指定: PANEL_ALLOW_IP=你的家宽IP,Bot服务器IP bash install.sh"
+fi
+
 cat > "${ENV_FILE}" <<EOF
 AGENT_LISTEN_HOST=0.0.0.0
 AGENT_LISTEN_PORT=${AGENT_PORT}
 AGENT_API_TOKEN=${AGENT_API_TOKEN}
 AGENT_DATA_DIR=${AGENT_HOME}/data
 AGENT_SHARED_PORT=${SHARED_PORT}
+SHARED_ENABLE=${SHARED_ENABLE}
 AGENT_PUBLIC_IP=${AGENT_PUBLIC_IP}
+PANEL_ALLOW_IP=${PANEL_ALLOW_IP}
 XRAY_BIN=${XRAY_BIN}
 XRAY_CONFIG=${XRAY_CONFIG}
 XRAY_API_ADDR=127.0.0.1:${XRAY_API_PORT}
@@ -623,20 +681,48 @@ systemctl restart "${XRAY_SERVICE}" || true
 systemctl restart socks-agent
 
 sleep 2
-# 等待独立共享账号播种（SHARED_SOCKS.txt）
-for _i in 1 2 3 4 5 6 7 8; do
-  if [[ -f "${AGENT_HOME}/data/SHARED_SOCKS.txt" ]]; then
-    break
-  fi
-  sleep 1
-done
 if systemctl is-active --quiet socks-agent; then
   info "socks-agent 已启动"
 else
   warn "socks-agent 未处于 active，请检查: journalctl -u socks-agent -n 50"
 fi
 
-# ---------- 防火墙：Agent API + 共享 SOCKS + 专属端口段 ----------
+# ---------- 防火墙：面板限 IP + 专属端口段；默认不开放共享 1080 ----------
+iptables_allow_from() {
+  local src="$1" port="$2" comment="$3"
+  [[ -n "${src}" && -n "${port}" ]] || return 0
+  if ! iptables -C INPUT -p tcp -s "${src}" --dport "${port}" -j ACCEPT -m comment --comment "${comment}" 2>/dev/null; then
+    iptables -I INPUT -p tcp -s "${src}" --dport "${port}" -j ACCEPT -m comment --comment "${comment}" || true
+  fi
+}
+
+iptables_drop_port() {
+  local port="$1" comment="$2"
+  # 去掉旧放行
+  iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null || true
+  if ! iptables -C INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; then
+    iptables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
+  fi
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null || true
+    if ! ip6tables -C INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; then
+      ip6tables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
+    fi
+  fi
+}
+
+persist_iptables() {
+  if command -v netfilter-persistent >/dev/null 2>&1; then
+    netfilter-persistent save >/dev/null 2>&1 || true
+  elif command -v service >/dev/null 2>&1 && [[ -f /etc/init.d/iptables ]]; then
+    service iptables save >/dev/null 2>&1 || true
+  else
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+  fi
+}
+
 open_firewall() {
   if [[ "${SKIP_FIREWALL}" == "1" ]]; then
     warn "已跳过防火墙配置（SKIP_FIREWALL=1）"
@@ -648,13 +734,27 @@ open_firewall() {
   fi
 
   local opened=0
+  local ip
+  local allow_note="any"
+  [[ -n "${PANEL_ALLOW_IP}" ]] && allow_note="${PANEL_ALLOW_IP}"
 
   if command -v ufw >/dev/null 2>&1; then
-    info "配置 UFW：${AGENT_PORT}/tcp, ${SHARED_PORT}/tcp, ${PORT_RANGE_START}:${PORT_RANGE_END}/tcp"
-    ufw allow "${AGENT_PORT}/tcp" comment 'socks-agent-api' >/dev/null 2>&1 || true
-    ufw allow "${SHARED_PORT}/tcp" comment 'socks-shared' >/dev/null 2>&1 || true
+    info "配置 UFW：面板 ${AGENT_PORT}←${allow_note}；专属 ${PORT_RANGE_START}:${PORT_RANGE_END}；拒绝共享 ${SHARED_PORT}"
+    # 去掉旧的「全世界可访问面板/共享」规则（若存在）
+    ufw delete allow "${AGENT_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw delete allow "${SHARED_PORT}/tcp" >/dev/null 2>&1 || true
+    if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+      IFS=',' read -ra _ips <<< "${PANEL_ALLOW_IP}"
+      for ip in "${_ips[@]}"; do
+        ip="$(echo "${ip}" | xargs)"
+        [[ -n "${ip}" ]] || continue
+        ufw allow from "${ip}" to any port "${AGENT_PORT}" proto tcp comment 'socks-agent-api' >/dev/null 2>&1 || true
+      done
+    else
+      ufw allow "${AGENT_PORT}/tcp" comment 'socks-agent-api' >/dev/null 2>&1 || true
+    fi
+    ufw deny "${SHARED_PORT}/tcp" comment 'socks-shared-disabled' >/dev/null 2>&1 || true
     ufw allow "${PORT_RANGE_START}:${PORT_RANGE_END}/tcp" comment 'socks-dedicated' >/dev/null 2>&1 || true
-    # 不主动 enable，避免未放行 SSH 时把自己锁死；已启用则规则立即生效
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
       info "UFW 已启用，端口规则已生效"
     else
@@ -664,49 +764,69 @@ open_firewall() {
   fi
 
   if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-    info "配置 firewalld：${AGENT_PORT}/tcp, ${SHARED_PORT}/tcp, ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp"
-    firewall-cmd --permanent --add-port="${AGENT_PORT}/tcp" >/dev/null 2>&1 || true
-    firewall-cmd --permanent --add-port="${SHARED_PORT}/tcp" >/dev/null 2>&1 || true
+    info "配置 firewalld：面板限 IP；专属端口段；不开放共享 ${SHARED_PORT}"
+    firewall-cmd --permanent --remove-port="${AGENT_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --remove-port="${SHARED_PORT}/tcp" >/dev/null 2>&1 || true
+    if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+      IFS=',' read -ra _ips <<< "${PANEL_ALLOW_IP}"
+      for ip in "${_ips[@]}"; do
+        ip="$(echo "${ip}" | xargs)"
+        [[ -n "${ip}" ]] || continue
+        firewall-cmd --permanent --add-rich-rule="rule family=\"ipv4\" source address=\"${ip}\" port port=\"${AGENT_PORT}\" protocol=\"tcp\" accept" >/dev/null 2>&1 || true
+      done
+    else
+      firewall-cmd --permanent --add-port="${AGENT_PORT}/tcp" >/dev/null 2>&1 || true
+    fi
     firewall-cmd --permanent --add-port="${PORT_RANGE_START}-${PORT_RANGE_END}/tcp" >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
     info "firewalld 端口已放行"
     opened=1
   fi
 
-  if [[ "${opened}" -eq 0 ]] && command -v iptables >/dev/null 2>&1; then
-    info "配置 iptables（无 UFW/firewalld 时回退）"
-    # 已有同注释规则则跳过，避免重复
-    if ! iptables -C INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; then
-      iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" || true
+  # iptables：UFW 未启用时也写一层，避免「规则写了但不生效」
+  if command -v iptables >/dev/null 2>&1; then
+    info "配置 iptables：面板←${allow_note}；DROP ${SHARED_PORT}；放行专属段"
+    # 去掉旧的全世界放行面板 / 旧 deny
+    iptables -D INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport "${AGENT_PORT}" -j DROP -m comment --comment "socks-agent-api-deny" 2>/dev/null || true
+    # 先拒绝面板端口，再按白名单放行（-I 后插入的规则更靠前）
+    if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+      iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j DROP -m comment --comment "socks-agent-api-deny" || true
+      if ! iptables -C INPUT -p tcp -s 127.0.0.1 --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api-local" 2>/dev/null; then
+        iptables -I INPUT -p tcp -s 127.0.0.1 --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api-local" || true
+      fi
+      IFS=',' read -ra _ips <<< "${PANEL_ALLOW_IP}"
+      for ip in "${_ips[@]}"; do
+        ip="$(echo "${ip}" | xargs)"
+        [[ -n "${ip}" ]] || continue
+        iptables_allow_from "${ip}" "${AGENT_PORT}" "socks-agent-api"
+      done
+    else
+      if ! iptables -C INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; then
+        iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" || true
+      fi
     fi
-    if ! iptables -C INPUT -p tcp --dport "${SHARED_PORT}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null; then
-      iptables -I INPUT -p tcp --dport "${SHARED_PORT}" -j ACCEPT -m comment --comment "socks-shared" || true
-    fi
+    iptables_drop_port "${SHARED_PORT}" "socks-shared-disabled"
     if ! iptables -C INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" 2>/dev/null; then
       iptables -I INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" || true
     fi
-    if command -v netfilter-persistent >/dev/null 2>&1; then
-      netfilter-persistent save >/dev/null 2>&1 || true
-    elif command -v service >/dev/null 2>&1 && [[ -f /etc/init.d/iptables ]]; then
-      service iptables save >/dev/null 2>&1 || true
-    else
-      warn "iptables 规则已添加，重启后可能丢失；建议安装 iptables-persistent 或改用 UFW"
-    fi
+    persist_iptables
     opened=1
   fi
 
   if [[ "${opened}" -eq 0 ]]; then
-    warn "未检测到 UFW / firewalld / iptables，请在云厂商安全组手动放行："
-    warn "  ${AGENT_PORT}/tcp  ${SHARED_PORT}/tcp  ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp"
+    warn "未检测到 UFW / firewalld / iptables，请在云厂商安全组手动配置："
+    warn "  面板 ${AGENT_PORT}/tcp 仅放行: ${allow_note}"
+    warn "  专属 ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp"
+    warn "  不要放行共享 ${SHARED_PORT}/tcp"
   else
-    warn "若使用云厂商安全组/面板防火墙，仍需在控制台放行相同端口"
+    warn "若使用云厂商安全组，请同样：面板只放行管理/Bot IP，不要放行 ${SHARED_PORT}"
   fi
 }
 
 open_firewall
 
-PUBLIC_IP="${AGENT_PUBLIC_IP:-$(curl -4 -fsS --max-time 5 ifconfig.me 2>/dev/null || curl -4 -fsS --max-time 5 ip.sb 2>/dev/null || echo 'YOUR_IP')}"
-SHARED_SOCKS_FILE="${AGENT_HOME}/data/SHARED_SOCKS.txt"
+PUBLIC_IP="${AGENT_PUBLIC_IP:-YOUR_IP}"
 
 echo
 echo "============================================================"
@@ -716,23 +836,23 @@ echo -e "  ${GREEN}Web 面板:     http://${PUBLIC_IP}:${AGENT_PORT}/panel${NC}"
 echo "  面板账号:     ${PANEL_USER}"
 echo "  面板密码:     ${PANEL_PASS}"
 echo "  公网 IP:      ${PUBLIC_IP}"
-echo "  共享 SOCKS:   ${AGENT_SHARED_PORT:-$SHARED_PORT}"
-if [[ -f "${SHARED_SOCKS_FILE}" ]]; then
-  echo "  共享账号:     见 ${SHARED_SOCKS_FILE}"
-  # 打印便于立即使用（不含大段噪音）
-  grep -E '^(user|pass|link)=' "${SHARED_SOCKS_FILE}" 2>/dev/null | sed 's/^/    /' || true
+if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+  echo "  面板白名单:   ${PANEL_ALLOW_IP}（仅这些 IP 可访问面板/API）"
+else
+  echo "  面板白名单:   未设置（任何 IP 可访问，不推荐）"
 fi
+echo "  共享 SOCKS:   默认关闭（SHARED_ENABLE=${SHARED_ENABLE}，端口 ${SHARED_PORT} 已 DROP）"
 echo "------------------------------------------------------------"
-echo "独立使用：浏览器打开面板 → 入站/账号 → 新增或改共享账号 → 复制 socks5 链接。"
-echo "对接机器人（可选）：面板类型选「极简 Agent」，填下面几项即可。"
+echo "独立使用：浏览器打开面板 → 入站/账号 → 新增专属 SOCKS → 复制链接。"
+echo "对接机器人（可选）：面板类型选「极简 Agent」，填下面几项；Bot 服务器 IP 须在 PANEL_ALLOW_IP 中。"
 echo "  Agent 地址:   http://${PUBLIC_IP}:${AGENT_LISTEN_PORT:-$AGENT_PORT}"
 echo "  API Token:    ${AGENT_API_TOKEN}"
-echo "  inbound_id:   1"
 echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
 echo "------------------------------------------------------------"
-echo "请放行: ${AGENT_PORT}/tcp(面板) / ${SHARED_PORT}/tcp(共享) / ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp(专属)"
-echo "安全建议：云安全组把 ${AGENT_PORT} 只放行你的管理 IP（及 Bot 服务器 IP，若使用）。"
-echo "Xray 上限: NOFILE=${XRAY_NOFILE} 内存 ${XRAY_MEM_PERCENT}%（调整: XRAY_NOFILE=131072 XRAY_MEM_PERCENT=80 bash install.sh）"
+echo "请放行: ${AGENT_PORT}/tcp(面板，限白名单) / ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp(专属)"
+echo "指定面板 IP: PANEL_ALLOW_IP=1.2.3.4,5.6.7.8 bash install.sh"
+echo "开启共享:    SHARED_ENABLE=1 bash install.sh （仍建议不要对公网裸放 ${SHARED_PORT}）"
+echo "Xray 上限: NOFILE=${XRAY_NOFILE} 内存 ${XRAY_MEM_PERCENT}%"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
 echo "跳过 BBR:   SKIP_BBR=1 bash install.sh"
 echo "改用旧版 XUI 内核: XRAY_KERNEL=xui bash install.sh"

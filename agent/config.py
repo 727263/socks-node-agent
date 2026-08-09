@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -15,8 +15,9 @@ class AgentConfig:
     xray_config: str = "/usr/local/etc/xray/config.json"
     xray_api_addr: str = "127.0.0.1:10085"
     xray_service: str = "xray"
-    # 共享 SOCKS 端口（独立使用 / Bot 节点「SOCKS 端口」）
+    # 共享 SOCKS 端口（默认关闭，防滥用）
     shared_port: int = 1080
+    shared_enable: bool = False
     # 公网 IP（复制链接用；也可在面板里改，写入 settings.json）
     public_ip: str = ""
     traffic_sync_seconds: int = 10
@@ -26,6 +27,8 @@ class AgentConfig:
     panel_user: str = ""
     panel_pass: str = ""
     panel_secret: str = ""
+    # 面板/API 来源 IP 白名单（空=不限制）；127.0.0.1 始终放行
+    panel_allow_ips: tuple[str, ...] = field(default_factory=tuple)
     agent_service: str = "socks-agent"
 
 
@@ -34,6 +37,18 @@ def _env_bool(name: str, default: bool) -> bool:
     if val is None:
         return default
     return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_ip_list(name: str) -> tuple[str, ...]:
+    raw = os.getenv(name, "").strip()
+    if not raw or raw in ("*", "0.0.0.0", "any"):
+        return ()
+    out: list[str] = []
+    for part in raw.replace(";", ",").split(","):
+        ip = part.strip()
+        if ip and ip not in out:
+            out.append(ip)
+    return tuple(out)
 
 
 def load_config() -> AgentConfig:
@@ -47,6 +62,7 @@ def load_config() -> AgentConfig:
         xray_api_addr=os.getenv("XRAY_API_ADDR", "127.0.0.1:10085"),
         xray_service=os.getenv("XRAY_SERVICE", "xray"),
         shared_port=int(os.getenv("AGENT_SHARED_PORT", "1080")),
+        shared_enable=_env_bool("SHARED_ENABLE", False),
         public_ip=os.getenv("AGENT_PUBLIC_IP", "").strip(),
         traffic_sync_seconds=int(os.getenv("AGENT_TRAFFIC_SYNC_SECONDS", "10")),
         enforce_seconds=int(os.getenv("AGENT_ENFORCE_SECONDS", "10")),
@@ -54,5 +70,6 @@ def load_config() -> AgentConfig:
         panel_user=os.getenv("PANEL_USER", "").strip(),
         panel_pass=os.getenv("PANEL_PASS", "").strip(),
         panel_secret=os.getenv("PANEL_SECRET", "").strip(),
+        panel_allow_ips=_env_ip_list("PANEL_ALLOW_IP"),
         agent_service=os.getenv("AGENT_SERVICE", "socks-agent"),
     )

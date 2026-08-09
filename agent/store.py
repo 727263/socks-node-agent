@@ -283,7 +283,7 @@ class InboundStore:
                 INSERT INTO inbounds (
                     id, port, protocol, remark, enable, total, up, down, expiry_time,
                     settings, stream_settings, sniffing, tag, created_at, updated_at
-                ) VALUES (1, ?, 'socks', 'shared-placeholder', 1, 0, 0, 0, 0, ?, '{}', ?, 'in-1', ?, ?)
+                ) VALUES (1, ?, 'socks', 'shared-placeholder', 0, 0, 0, 0, 0, ?, '{}', ?, 'in-1', ?, ?)
                 """,
                 (
                     int(port),

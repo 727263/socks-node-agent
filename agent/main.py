@@ -330,10 +330,12 @@ def _gen_secret(n: int = 10) -> str:
 
 
 def _seed_shared_socks_if_needed() -> Optional[tuple[dict, dict, dict]]:
-    """独立使用：共享入站若无账号，自动生成一组可登录凭据。
+    """独立使用：仅当 SHARED_ENABLE=1 时，共享入站无账号则自动生成凭据。
 
     返回 (old, updated, fields)；无需播种时返回 None。
     """
+    if not cfg.shared_enable:
+        return None
     inb = store.get(1)
     if inb is None:
         return None
@@ -383,6 +385,20 @@ def _seed_shared_socks_if_needed() -> Optional[tuple[dict, dict, dict]]:
         cfg.shared_port, user, cred_path,
     )
     return inb, updated, fields
+
+
+def _ensure_shared_disabled_if_needed() -> Optional[tuple[dict, dict, dict]]:
+    """SHARED_ENABLE=0 时保证 id=1 关闭（不自动开 1080）。"""
+    if cfg.shared_enable:
+        return None
+    inb = store.get(1)
+    if inb is None or not inb.get("enable"):
+        return None
+    updated = store.update(1, {"enable": False})
+    if updated is None:
+        return None
+    log.info("SHARED_ENABLE=0: disabled shared inbound id=1 port=%s", inb.get("port"))
+    return inb, updated, {"enable": False}
 
 
 def resolve_public_ip() -> str:
@@ -449,17 +465,17 @@ async def lifespan(app: FastAPI):
     )
     store.ensure_shared_placeholder(cfg.shared_port)
     with _ops_lock:
-        seeded = _seed_shared_socks_if_needed()
-        if seeded:
-            old, updated, fields = seeded
+        changed = _ensure_shared_disabled_if_needed() or _seed_shared_socks_if_needed()
+        if changed:
+            old, updated, fields = changed
             try:
                 _persist_update(old, updated, fields)
             except Exception as e:  # noqa: BLE001
-                log.exception("apply seeded shared socks failed: %s", e)
+                log.exception("apply shared inbound state failed: %s", e)
                 try:
                     _apply_xray()
                 except Exception:  # noqa: BLE001
-                    log.exception("fallback reload after seed failed")
+                    log.exception("fallback reload after shared state failed")
     try:
         xray.sync_live_from_store(_enabled_list())
     except Exception as e:  # noqa: BLE001
@@ -467,9 +483,10 @@ async def lifespan(app: FastAPI):
     _stop.clear()
     t = threading.Thread(target=_bg_loop, name="agent-bg", daemon=True)
     t.start()
+    allow = ",".join(cfg.panel_allow_ips) if cfg.panel_allow_ips else "(any)"
     log.info(
-        "SOCKS Agent ready on %s:%d shared_port=%d panel=/panel standalone_ok=1",
-        cfg.listen_host, cfg.listen_port, cfg.shared_port,
+        "SOCKS Agent ready on %s:%d shared_enable=%s shared_port=%d panel_allow=%s",
+        cfg.listen_host, cfg.listen_port, cfg.shared_enable, cfg.shared_port, allow,
     )
     yield
     _stop.set()
@@ -488,6 +505,28 @@ app.add_middleware(
     same_site="lax",
     https_only=False,
 )
+
+
+@app.middleware("http")
+async def _panel_ip_allowlist(request: Request, call_next):
+    """PANEL_ALLOW_IP 非空时，仅放行白名单 + 本机。"""
+    from .config import _env_ip_list
+
+    allow: tuple[str, ...] = ()
+    try:
+        allow = cfg.panel_allow_ips  # noqa: F821 — lifespan 后可用
+    except (NameError, AttributeError):
+        allow = _env_ip_list("PANEL_ALLOW_IP")
+    if not allow:
+        return await call_next(request)
+    client = (request.client.host if request.client else "") or ""
+    if client in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or client in allow:
+        return await call_next(request)
+    if client.startswith("::ffff:") and client[7:] in allow:
+        return await call_next(request)
+    log.warning("reject %s %s from %s (PANEL_ALLOW_IP)", request.method, request.url.path, client)
+    return JSONResponse(fail("forbidden: IP not allowed"), status_code=403)
+
 
 from . import panel  # noqa: E402  (在 app 定义后导入，避免循环)
 
@@ -618,7 +657,8 @@ def del_inbound(inbound_id: int):
             if old is None:
                 return ok(None, msg="already gone")
             if inbound_id == 1:
-                # 占位入站：不删库，清空账号并保持端口
+                # 占位入站：不删库，清空账号；默认保持关闭（SHARED_ENABLE=0）
+                keep_on = bool(cfg.shared_enable)
                 cleared = store.update(
                     1,
                     {
@@ -628,7 +668,7 @@ def del_inbound(inbound_id: int):
                             "udp": False,
                             "ip": "127.0.0.1",
                         },
-                        "enable": True,
+                        "enable": keep_on,
                         "total": 0,
                         "up": 0,
                         "down": 0,
@@ -637,10 +677,10 @@ def del_inbound(inbound_id: int):
                     },
                 )
                 if cleared:
-                    # 占位：settings 变空账号，需热替换
+                    # 占位：settings 变空账号，需热替换/删除
                     _persist_update(old, cleared, {
                         "settings": cleared.get("settings"),
-                        "enable": True,
+                        "enable": keep_on,
                         "total": 0,
                         "up": 0,
                         "down": 0,
