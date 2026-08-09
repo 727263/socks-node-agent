@@ -688,26 +688,43 @@ else
 fi
 
 # ---------- 防火墙：面板限 IP + 专属端口段；默认不开放共享 1080 ----------
-iptables_allow_from() {
-  local src="$1" port="$2" comment="$3"
-  [[ -n "${src}" && -n "${port}" ]] || return 0
-  if ! iptables -C INPUT -p tcp -s "${src}" --dport "${port}" -j ACCEPT -m comment --comment "${comment}" 2>/dev/null; then
-    iptables -I INPUT -p tcp -s "${src}" --dport "${port}" -j ACCEPT -m comment --comment "${comment}" || true
+iptables_drop_port() {
+  local port="$1" comment="$2"
+  while iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null; do :; done
+  while iptables -D INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; do :; done
+  iptables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
+  if command -v ip6tables >/dev/null 2>&1; then
+    while ip6tables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null; do :; done
+    while ip6tables -D INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; do :; done
+    ip6tables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
   fi
 }
 
-iptables_drop_port() {
-  local port="$1" comment="$2"
-  # 去掉旧放行
-  iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null || true
-  if ! iptables -C INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; then
-    iptables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
-  fi
-  if command -v ip6tables >/dev/null 2>&1; then
-    ip6tables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-shared" 2>/dev/null || true
-    if ! ip6tables -C INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" 2>/dev/null; then
-      ip6tables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "${comment}" || true
-    fi
+# 重建面板端口规则：必须先 DROP 再 -I ACCEPT，保证白名单在 DROP 之上。
+# 重装时若只补 DROP、旧 ACCEPT 还在下面，会出现「全丢弃」导致面板/API 全超时。
+iptables_rebuild_panel_allow() {
+  local port="$1"
+  local ip
+  while iptables -D INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "socks-agent-api-deny" 2>/dev/null; do :; done
+  while iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; do :; done
+  while iptables -D INPUT -p tcp -s 127.0.0.1 --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api-local" 2>/dev/null; do :; done
+  # also delete per-source accepts (comment socks-agent-api with -s)
+  if [[ -n "${PANEL_ALLOW_IP}" ]]; then
+    IFS=',' read -ra _ips <<< "${PANEL_ALLOW_IP}"
+    for ip in "${_ips[@]}"; do
+      ip="$(echo "${ip}" | xargs)"
+      [[ -n "${ip}" ]] || continue
+      while iptables -D INPUT -p tcp -s "${ip}" --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; do :; done
+    done
+    iptables -I INPUT -p tcp --dport "${port}" -j DROP -m comment --comment "socks-agent-api-deny" || true
+    iptables -I INPUT -p tcp -s 127.0.0.1 --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api-local" || true
+    for ip in "${_ips[@]}"; do
+      ip="$(echo "${ip}" | xargs)"
+      [[ -n "${ip}" ]] || continue
+      iptables -I INPUT -p tcp -s "${ip}" --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api" || true
+    done
+  else
+    iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT -m comment --comment "socks-agent-api" || true
   fi
 }
 
@@ -783,29 +800,9 @@ open_firewall() {
     opened=1
   fi
 
-  # iptables：UFW 未启用时也写一层，避免「规则写了但不生效」
   if command -v iptables >/dev/null 2>&1; then
     info "配置 iptables：面板←${allow_note}；DROP ${SHARED_PORT}；放行专属段"
-    # 去掉旧的全世界放行面板 / 旧 deny
-    iptables -D INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null || true
-    iptables -D INPUT -p tcp --dport "${AGENT_PORT}" -j DROP -m comment --comment "socks-agent-api-deny" 2>/dev/null || true
-    # 先拒绝面板端口，再按白名单放行（-I 后插入的规则更靠前）
-    if [[ -n "${PANEL_ALLOW_IP}" ]]; then
-      iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j DROP -m comment --comment "socks-agent-api-deny" || true
-      if ! iptables -C INPUT -p tcp -s 127.0.0.1 --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api-local" 2>/dev/null; then
-        iptables -I INPUT -p tcp -s 127.0.0.1 --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api-local" || true
-      fi
-      IFS=',' read -ra _ips <<< "${PANEL_ALLOW_IP}"
-      for ip in "${_ips[@]}"; do
-        ip="$(echo "${ip}" | xargs)"
-        [[ -n "${ip}" ]] || continue
-        iptables_allow_from "${ip}" "${AGENT_PORT}" "socks-agent-api"
-      done
-    else
-      if ! iptables -C INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" 2>/dev/null; then
-        iptables -I INPUT -p tcp --dport "${AGENT_PORT}" -j ACCEPT -m comment --comment "socks-agent-api" || true
-      fi
-    fi
+    iptables_rebuild_panel_allow "${AGENT_PORT}"
     iptables_drop_port "${SHARED_PORT}" "socks-shared-disabled"
     if ! iptables -C INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" 2>/dev/null; then
       iptables -I INPUT -p tcp --dport "${PORT_RANGE_START}:${PORT_RANGE_END}" -j ACCEPT -m comment --comment "socks-dedicated" || true
