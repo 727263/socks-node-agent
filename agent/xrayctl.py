@@ -47,11 +47,28 @@ def inbound_to_xray(inb: dict[str, Any], *, for_api: bool = False) -> dict[str, 
         "streamSettings": {},
         "sniffing": sniff_obj,
     }
-    # 全量 config：listen=null（兼容老 XUI 内核多 socks 串台问题）。
-    # 热加载 adi：不要写 null，省略字段让 xray 默认 0.0.0.0（与 3X-UI 行为一致）。
-    if not for_api:
+    listen = _inbound_listen(inb)
+    if listen:
+        out["listen"] = listen
+        # Linux 默认 bindv6only=0 时 listen=:: 仍会收 IPv4；强制只听 v6。
+        if listen == "::":
+            out["streamSettings"] = {"sockopt": {"v6only": True}}
+    elif not for_api:
+        # 存量空 listen：全量 config 写 null（兼容老 XUI 多 socks 串台）。
         out["listen"] = None
     return out
+
+
+def _inbound_listen(inb: dict[str, Any]) -> str:
+    raw = str(inb.get("listen") or "").strip().strip("[]")
+    if not raw:
+        return ""
+    low = raw.lower()
+    if low in ("::", "v6"):
+        return "::"
+    if low in ("0.0.0.0", "v4"):
+        return "0.0.0.0"
+    return raw
 
 
 def build_full_config(enabled_inbounds: list[dict[str, Any]], api_port: int = 10085) -> dict:
@@ -152,12 +169,15 @@ class XrayController:
             return False
 
     @staticmethod
-    def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
-        try:
-            with socket.create_connection((host, int(port)), timeout=timeout):
-                return True
-        except OSError:
-            return False
+    def _port_open(port: int, host: str | None = None, timeout: float = 0.5) -> bool:
+        hosts = [host] if host else ["127.0.0.1", "::1"]
+        for h in hosts:
+            try:
+                with socket.create_connection((h, int(port)), timeout=timeout):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _wait_ports_ready(self, ports: list[int], timeout: float = 15.0) -> None:
         """重启后等所有入站端口真正 listen，确保账号已加载再返回。"""

@@ -56,6 +56,9 @@ class InboundStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_inbounds_port ON inbounds(port)"
             )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(inbounds)").fetchall()}
+            if "listen" not in cols:
+                conn.execute("ALTER TABLE inbounds ADD COLUMN listen TEXT NOT NULL DEFAULT ''")
             conn.commit()
 
     @staticmethod
@@ -72,7 +75,7 @@ class InboundStore:
             "remark": row["remark"] or "",
             "enable": bool(row["enable"]),
             "expiryTime": int(row["expiry_time"]),
-            "listen": "",
+            "listen": (row["listen"] if "listen" in row.keys() else "") or "",
             "port": int(row["port"]),
             "protocol": row["protocol"] or "socks",
             "settings": row["settings"],
@@ -147,6 +150,7 @@ class InboundStore:
         settings: Any = None,
         stream_settings: str = "{}",
         sniffing: Any = None,
+        listen: str = "",
     ) -> dict[str, Any]:
         settings_raw = (
             settings
@@ -166,8 +170,8 @@ class InboundStore:
                 """
                 INSERT INTO inbounds (
                     id, port, protocol, remark, enable, total, up, down, expiry_time,
-                    settings, stream_settings, sniffing, tag, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+                    settings, stream_settings, sniffing, tag, created_at, updated_at, listen
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     inbound_id,
@@ -183,6 +187,7 @@ class InboundStore:
                     tag,
                     now,
                     now,
+                    (listen or "").strip(),
                 ),
             )
             self._sync_sqlite_sequence(conn)
@@ -205,6 +210,7 @@ class InboundStore:
             "settings": "settings",
             "streamSettings": "stream_settings",
             "sniffing": "sniffing",
+            "listen": "listen",
         }
         sets: list[str] = []
         vals: list[Any] = []
@@ -219,6 +225,8 @@ class InboundStore:
                     val = 1 if val.lower() in ("true", "1", "yes") else 0
                 else:
                     val = 1 if val else 0
+            elif col == "listen":
+                val = str(val or "").strip()
             elif col in ("settings", "stream_settings", "sniffing") and not isinstance(val, str):
                 val = json.dumps(val, ensure_ascii=False)
             sets.append(f"{col} = ?")

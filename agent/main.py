@@ -82,7 +82,7 @@ def _normalize_settings(raw: Any) -> str:
 _META_KEYS = frozenset({"total", "up", "down", "expiryTime", "remark"})
 # 会改变 xray 实际监听/认证的字段
 _XRAY_KEYS = frozenset({
-    "port", "protocol", "enable", "settings", "streamSettings", "sniffing",
+    "port", "protocol", "enable", "settings", "streamSettings", "sniffing", "listen",
 })
 
 
@@ -610,6 +610,7 @@ async def add_inbound(request: Request):
                 settings=_normalize_settings(body.get("settings")),
                 stream_settings=body.get("streamSettings") or "{}",
                 sniffing=body.get("sniffing"),
+                listen=str(body.get("listen") or "").strip(),
             )
             _persist_add(inb)
         return ok(inb)
@@ -629,7 +630,7 @@ async def update_inbound(inbound_id: int, request: Request):
             fields = {}
             for k in (
                 "port", "protocol", "remark", "enable", "total", "up", "down",
-                "expiryTime", "settings", "streamSettings", "sniffing",
+                "expiryTime", "settings", "streamSettings", "sniffing", "listen",
             ):
                 if k in body:
                     if k == "settings":
