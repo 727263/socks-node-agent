@@ -140,6 +140,7 @@ def api_get_settings(request: Request):
         "public_ip": m.resolve_public_ip(),
         "shared_port": m.cfg.shared_port,
         "listen_port": m.cfg.listen_port,
+        "panel_allow_ip": m.panel_allow_ips_display(),
     })
 
 
@@ -149,14 +150,26 @@ async def api_set_settings(request: Request):
         return _need_login()
     m = _main()
     body = await request.json()
+    fw_result = None
     if "public_ip" in body:
         ip = str(body.get("public_ip") or "").strip()
         m.local_settings.set("public_ip", ip)
+    if "panel_allow_ip" in body:
+        fw_result = m.update_panel_allow_ips(str(body.get("panel_allow_ip") or ""))
+    msg = "已保存"
+    if fw_result:
+        fw = fw_result.get("firewall") or {}
+        if fw.get("errors"):
+            msg = "已保存；部分防火墙规则未生效，请查看 Agent 日志或云安全组"
+        elif fw.get("applied"):
+            msg = "已保存，防火墙已更新"
     return _ok({
         "public_ip": m.resolve_public_ip(),
         "shared_port": m.cfg.shared_port,
         "listen_port": m.cfg.listen_port,
-    }, msg="已保存")
+        "panel_allow_ip": m.panel_allow_ips_display(),
+        "firewall": fw_result.get("firewall") if fw_result else None,
+    }, msg=msg)
 
 
 @router.post("/panel/api/change-password")

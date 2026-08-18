@@ -421,27 +421,59 @@ def update_panel_password(new_pass: str) -> None:
     if not new_pass:
         raise ValueError("新密码不能为空")
     local_settings.set("panel_pass", new_pass)
+    _write_env_key("PANEL_PASS", new_pass)
+
+
+_runtime_panel_allow_ips: tuple[str, ...] | None = None
+
+
+def _write_env_key(key: str, value: str) -> None:
     env_path = Path(cfg.data_dir).parent / "agent.env"
     if not env_path.is_file():
         return
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines()
         out: list[str] = []
+        prefix = key + "="
         found = False
         for line in lines:
-            if line.startswith("PANEL_PASS="):
-                out.append(f"PANEL_PASS={new_pass}")
+            if line.startswith(prefix):
+                out.append(f"{key}={value}")
                 found = True
             else:
                 out.append(line)
         if not found:
-            out.append(f"PANEL_PASS={new_pass}")
+            out.append(f"{key}={value}")
         tmp = env_path.with_suffix(".tmp")
         tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
         tmp.replace(env_path)
-        log.info("Updated PANEL_PASS in %s", env_path)
+        log.info("Updated %s in %s", key, env_path)
     except OSError as e:
-        log.warning("update agent.env PANEL_PASS failed: %s", e)
+        log.warning("update agent.env %s failed: %s", key, e)
+
+
+def panel_allow_ips() -> tuple[str, ...]:
+    global _runtime_panel_allow_ips
+    if _runtime_panel_allow_ips is not None:
+        return _runtime_panel_allow_ips
+    return cfg.panel_allow_ips
+
+
+def panel_allow_ips_display() -> str:
+    return ",".join(panel_allow_ips())
+
+
+def update_panel_allow_ips(raw: str) -> dict[str, Any]:
+    """Update in-memory allowlist, persist agent.env, rebuild firewall."""
+    global _runtime_panel_allow_ips
+    from .firewall import apply_panel_allow, parse_ip_list
+
+    raw = (raw or "").strip()
+    ips = parse_ip_list(raw)
+    _runtime_panel_allow_ips = tuple(ips)
+    _write_env_key("PANEL_ALLOW_IP", raw if ips else "")
+    fw = apply_panel_allow(cfg.listen_port, raw)
+    return {"panel_allow_ip": raw, "firewall": fw}
 
 
 @asynccontextmanager
@@ -514,7 +546,7 @@ async def _panel_ip_allowlist(request: Request, call_next):
 
     allow: tuple[str, ...] = ()
     try:
-        allow = cfg.panel_allow_ips  # noqa: F821 — lifespan 后可用
+        allow = panel_allow_ips()
     except (NameError, AttributeError):
         allow = _env_ip_list("PANEL_ALLOW_IP")
     if not allow:

@@ -280,6 +280,13 @@
         <button class="btn-primary btn-sm" onclick="saveSettings()">保存</button>
       </div>
 
+      <label class="muted" style="display:block;margin-top:20px;margin-bottom:6px">面板/API 允许 IP（逗号分隔，空=不限制）</label>
+      <div class="toolbar">
+        <input id="set_panel_allow_ip" placeholder="Bot服务器IP,你的管理IP" style="width:min(100%,420px)">
+        <button class="btn-primary btn-sm" onclick="saveSettings()">保存</button>
+      </div>
+      <p class="hint" style="margin-top:8px">仅这些来源可访问本面板与 Bot API（默认 9100）。127.0.0.1 始终放行。保存后会自动更新 iptables/UFW。</p>
+
       <h2 style="margin-top:28px">修改后台登录密码</h2>
       <label class="muted" style="display:block;margin-bottom:6px">当前密码</label>
       <input id="pw_current" type="password" autocomplete="current-password" style="width:260px;max-width:100%">
@@ -400,6 +407,7 @@ function showTab(name) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   $('tab-' + name).classList.add('show');
   if (name === 'logs' && !$('logBox').dataset.loaded) loadLog('xray');
+  if (name === 'settings') loadPanelSettings();
 }
 
 function gaugeColor(p) {
@@ -760,15 +768,32 @@ async function firewall() {
   $('fwResult').innerHTML = '端口监听: ' + ports + '<br>' + esc(o.firewall);
 }
 
+async function loadPanelSettings() {
+  try {
+    const j = await api('/panel/api/settings');
+    if (!j.success) return;
+    const o = j.obj || {};
+    if ($('set_public_ip') && !$('set_public_ip').dataset.touched) {
+      $('set_public_ip').value = o.public_ip || '';
+    }
+    if ($('set_panel_allow_ip') && !$('set_panel_allow_ip').dataset.touched) {
+      $('set_panel_allow_ip').value = o.panel_allow_ip || '';
+    }
+  } catch (e) {}
+}
+
 async function saveSettings() {
   const ip = $('set_public_ip').value.trim();
+  const allow = $('set_panel_allow_ip') ? $('set_panel_allow_ip').value.trim() : '';
   const j = await api('/panel/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ public_ip: ip }),
+    body: JSON.stringify({ public_ip: ip, panel_allow_ip: allow }),
   });
   if (j.success) {
     hostIP = j.obj.public_ip || location.hostname;
-    toast('设置已保存');
+    if ($('set_public_ip')) $('set_public_ip').dataset.touched = '';
+    if ($('set_panel_allow_ip')) $('set_panel_allow_ip').dataset.touched = '';
+    toast(j.msg || '设置已保存');
     loadOverview();
     renderInbounds();
   } else toast('失败: ' + j.msg);
@@ -802,6 +827,8 @@ async function logout() {
 document.addEventListener('DOMContentLoaded', () => {
   const el = $('set_public_ip');
   if (el) el.addEventListener('input', () => { el.dataset.touched = '1'; });
+  const allowEl = $('set_panel_allow_ip');
+  if (allowEl) allowEl.addEventListener('input', () => { allowEl.dataset.touched = '1'; });
 });
 
 loadOverview();
