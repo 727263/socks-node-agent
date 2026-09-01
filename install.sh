@@ -69,7 +69,7 @@ VAXILU_XUI_TAG="${VAXILU_XUI_TAG:-}"
 # Xray 资源上限：FD 数决定并发连接天花板，MemoryMax 保证整机不被拖死
 XRAY_NOFILE="${XRAY_NOFILE:-65536}"
 XRAY_MEM_PERCENT="${XRAY_MEM_PERCENT:-70}"
-# 面板/API 来源 IP 白名单（逗号分隔）；空则尝试用当前 SSH 客户端 IP
+# 面板/API 来源 IP 白名单（逗号分隔）；安装默认不设置，请在 Web 面板里配置
 PANEL_ALLOW_IP="${PANEL_ALLOW_IP:-}"
 # 节点公网 IP（复制链接用）；空则自动探测
 AGENT_PUBLIC_IP="${AGENT_PUBLIC_IP:-}"
@@ -85,7 +85,7 @@ usage() {
   XRAY_KERNEL=xui|official      与 --kernel 相同（curl 管道安装时用）
   SKIP_BBR=1                      跳过 TCP BBR 拥塞控制优化
   SHARED_ENABLE=1                 启用共享 SOCKS（默认关闭）
-  PANEL_ALLOW_IP=1.2.3.4,5.6.7.8  仅允许这些 IP 访问面板/API
+  PANEL_ALLOW_IP=1.2.3.4,5.6.7.8  仅允许这些 IP 访问面板/API（可选，默认不限制）
   AGENT_PUBLIC_IP=x.x.x.x         节点公网 IP（默认自动探测）
   SKIP_FIREWALL=1                 跳过防火墙配置
 
@@ -572,7 +572,7 @@ gen_secret() {
 
 ENV_FILE="${AGENT_HOME}/agent.env"
 # 命令行/环境变量优先于已有 agent.env
-_OVERRIDE_PANEL_ALLOW_IP="${PANEL_ALLOW_IP-}"
+_EXPLICIT_PANEL_ALLOW_IP="${PANEL_ALLOW_IP-}"
 _OVERRIDE_PUBLIC_IP="${AGENT_PUBLIC_IP-}"
 _OVERRIDE_SHARED_ENABLE="${SHARED_ENABLE-}"
 if [[ -f "${ENV_FILE}" ]]; then
@@ -580,7 +580,9 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
   info "沿用已有配置（${ENV_FILE}）"
 fi
-[[ -n "${_OVERRIDE_PANEL_ALLOW_IP}" ]] && PANEL_ALLOW_IP="${_OVERRIDE_PANEL_ALLOW_IP}"
+if [[ -n "${_EXPLICIT_PANEL_ALLOW_IP}" ]]; then
+  PANEL_ALLOW_IP="${_EXPLICIT_PANEL_ALLOW_IP}"
+fi
 [[ -n "${_OVERRIDE_PUBLIC_IP}" ]] && AGENT_PUBLIC_IP="${_OVERRIDE_PUBLIC_IP}"
 [[ -n "${_OVERRIDE_SHARED_ENABLE}" ]] && SHARED_ENABLE="${_OVERRIDE_SHARED_ENABLE}"
 # 缺失项才生成，已有值沿用（升级不改 Token / 面板密码）
@@ -597,19 +599,6 @@ detect_public_ip() {
     || true
 }
 
-detect_ssh_client_ip() {
-  local ip=""
-  if [[ -n "${SSH_CLIENT:-}" ]]; then
-    ip="${SSH_CLIENT%% *}"
-  elif [[ -n "${SSH_CONNECTION:-}" ]]; then
-    ip="${SSH_CONNECTION%% *}"
-  fi
-  # 粗过滤
-  if [[ "${ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "${ip}" == *:* ]]; then
-    echo "${ip}"
-  fi
-}
-
 PUBLIC_IP="$(detect_public_ip)"
 AGENT_PUBLIC_IP="${AGENT_PUBLIC_IP:-${PUBLIC_IP}}"
 if [[ -z "${AGENT_PUBLIC_IP}" ]]; then
@@ -618,15 +607,10 @@ else
   info "节点公网 IP: ${AGENT_PUBLIC_IP}"
 fi
 
-# 面板白名单：优先已有/环境变量；否则用当前 SSH 客户端 IP
-if [[ -z "${PANEL_ALLOW_IP}" ]]; then
-  PANEL_ALLOW_IP="$(detect_ssh_client_ip)"
-fi
 if [[ -n "${PANEL_ALLOW_IP}" ]]; then
-  info "面板/API 仅允许来源 IP: ${PANEL_ALLOW_IP}（改: PANEL_ALLOW_IP=ip1,ip2 bash install.sh）"
+  info "面板/API 仅允许来源 IP: ${PANEL_ALLOW_IP}"
 else
-  warn "未检测到 PANEL_ALLOW_IP / SSH 客户端 IP — 面板将不对来源 IP 做限制（不安全）"
-  warn "建议重装时指定: PANEL_ALLOW_IP=你的家宽IP,Bot服务器IP bash install.sh"
+  info "面板/API IP 过滤: 关闭（安装后可在 Web 面板设置里配置 PANEL_ALLOW_IP）"
 fi
 
 cat > "${ENV_FILE}" <<EOF
@@ -836,7 +820,7 @@ echo "  公网 IP:      ${PUBLIC_IP}"
 if [[ -n "${PANEL_ALLOW_IP}" ]]; then
   echo "  面板白名单:   ${PANEL_ALLOW_IP}（仅这些 IP 可访问面板/API）"
 else
-  echo "  面板白名单:   未设置（任何 IP 可访问，不推荐）"
+  echo "  面板白名单:   未设置（登录面板 → 设置 中配置防护 IP）"
 fi
 echo "  共享 SOCKS:   默认关闭（SHARED_ENABLE=${SHARED_ENABLE}，端口 ${SHARED_PORT} 已 DROP）"
 echo "------------------------------------------------------------"
@@ -847,7 +831,8 @@ echo "  API Token:    ${AGENT_API_TOKEN}"
 echo "  Xray 内核:    ${XRAY_KERNEL_LABEL} (${XRAY_BIN})"
 echo "------------------------------------------------------------"
 echo "请放行: ${AGENT_PORT}/tcp(面板，限白名单) / ${PORT_RANGE_START}-${PORT_RANGE_END}/tcp(专属)"
-echo "指定面板 IP: PANEL_ALLOW_IP=1.2.3.4,5.6.7.8 bash install.sh"
+echo "指定面板 IP: PANEL_ALLOW_IP=1.2.3.4,5.6.7.8 bash install.sh （可选）"
+echo "面板进不去? SSH 清空 ${ENV_FILE} 中 PANEL_ALLOW_IP= 并删除 iptables socks-agent-api-deny 规则后 systemctl restart socks-agent"
 echo "开启共享:    SHARED_ENABLE=1 bash install.sh （仍建议不要对公网裸放 ${SHARED_PORT}）"
 echo "Xray 上限: NOFILE=${XRAY_NOFILE} 内存 ${XRAY_MEM_PERCENT}%"
 echo "跳过防火墙: SKIP_FIREWALL=1 bash install.sh"
