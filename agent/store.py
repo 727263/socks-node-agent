@@ -59,6 +59,14 @@ class InboundStore:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(inbounds)").fetchall()}
             if "listen" not in cols:
                 conn.execute("ALTER TABLE inbounds ADD COLUMN listen TEXT NOT NULL DEFAULT ''")
+            if "uplink_limit_mbps" not in cols:
+                conn.execute(
+                    "ALTER TABLE inbounds ADD COLUMN uplink_limit_mbps INTEGER NOT NULL DEFAULT 0"
+                )
+            if "downlink_limit_mbps" not in cols:
+                conn.execute(
+                    "ALTER TABLE inbounds ADD COLUMN downlink_limit_mbps INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
 
     @staticmethod
@@ -76,6 +84,8 @@ class InboundStore:
             "enable": bool(row["enable"]),
             "expiryTime": int(row["expiry_time"]),
             "listen": (row["listen"] if "listen" in row.keys() else "") or "",
+            "uplinkLimitMbps": int(row["uplink_limit_mbps"]) if "uplink_limit_mbps" in row.keys() else 0,
+            "downlinkLimitMbps": int(row["downlink_limit_mbps"]) if "downlink_limit_mbps" in row.keys() else 0,
             "port": int(row["port"]),
             "protocol": row["protocol"] or "socks",
             "settings": row["settings"],
@@ -151,6 +161,8 @@ class InboundStore:
         stream_settings: str = "{}",
         sniffing: Any = None,
         listen: str = "",
+        uplink_limit_mbps: int = 0,
+        downlink_limit_mbps: int = 0,
     ) -> dict[str, Any]:
         settings_raw = (
             settings
@@ -170,8 +182,9 @@ class InboundStore:
                 """
                 INSERT INTO inbounds (
                     id, port, protocol, remark, enable, total, up, down, expiry_time,
-                    settings, stream_settings, sniffing, tag, created_at, updated_at, listen
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                    settings, stream_settings, sniffing, tag, created_at, updated_at, listen,
+                    uplink_limit_mbps, downlink_limit_mbps
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     inbound_id,
@@ -188,6 +201,8 @@ class InboundStore:
                     now,
                     now,
                     (listen or "").strip(),
+                    int(uplink_limit_mbps or 0),
+                    int(downlink_limit_mbps or 0),
                 ),
             )
             self._sync_sqlite_sequence(conn)
@@ -211,6 +226,8 @@ class InboundStore:
             "streamSettings": "stream_settings",
             "sniffing": "sniffing",
             "listen": "listen",
+            "uplinkLimitMbps": "uplink_limit_mbps",
+            "downlinkLimitMbps": "downlink_limit_mbps",
         }
         sets: list[str] = []
         vals: list[Any] = []

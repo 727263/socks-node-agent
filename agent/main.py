@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .config import AgentConfig, load_config
 from .local_settings import LocalSettings
+from .ratelimit import RateLimiter, limits_from_inbound
 from .store import InboundStore
 from .xrayctl import XrayController
 
@@ -30,6 +31,7 @@ log = logging.getLogger("socks-agent")
 cfg: AgentConfig
 store: InboundStore
 xray: XrayController
+rate_limiter = RateLimiter()
 local_settings: LocalSettings
 _stop = threading.Event()
 # xray 启动后的 stats 快照，用于把增量累加到 DB（避免重启后回退）
@@ -79,7 +81,10 @@ def _normalize_settings(raw: Any) -> str:
 
 
 # 仅影响 Agent 记账/展示，不进 xray 运行配置
-_META_KEYS = frozenset({"total", "up", "down", "expiryTime", "remark"})
+_META_KEYS = frozenset({
+    "total", "up", "down", "expiryTime", "remark",
+    "uplinkLimitMbps", "downlinkLimitMbps",
+})
 # 会改变 xray 实际监听/认证的字段
 _XRAY_KEYS = frozenset({
     "port", "protocol", "enable", "settings", "streamSettings", "sniffing", "listen",
@@ -165,12 +170,29 @@ def _apply_live_or_restart(*, add: Optional[dict] = None, remove_tag: Optional[s
     _apply_xray(force_restart=True)
 
 
+def _apply_inbound_rate(inb: Optional[dict], *, old_port: int = 0) -> None:
+    if old_port and (not inb or int(inb.get("port") or 0) != old_port):
+        rate_limiter.remove(old_port)
+    if not inb:
+        return
+    port = int(inb.get("port") or 0)
+    if not port:
+        return
+    if _parse_enable(inb.get("enable")):
+        up, down = limits_from_inbound(inb)
+        rate_limiter.apply(port, up, down)
+    else:
+        rate_limiter.remove(port)
+
+
 def _persist_add(inb: dict) -> None:
     """新建入站：热加；未启用则只写盘。"""
     if not inb.get("enable"):
         _sync_config_disk()
+        _apply_inbound_rate(inb)
         return
     _apply_live_or_restart(add=inb)
+    _apply_inbound_rate(inb)
 
 
 def _persist_remove(inb: dict) -> None:
@@ -180,6 +202,7 @@ def _persist_remove(inb: dict) -> None:
         _apply_live_or_restart(remove_tag=tag)
     else:
         _sync_config_disk()
+    _apply_inbound_rate(None, old_port=int(inb.get("port") or 0))
 
 
 def _persist_update(old: dict, updated: dict, fields: dict) -> None:
@@ -190,6 +213,7 @@ def _persist_update(old: dict, updated: dict, fields: dict) -> None:
             "inbound %s metadata-only update (%s), skip xray reload",
             updated.get("id"), ",".join(touched),
         )
+        _apply_inbound_rate(updated, old_port=int(old.get("port") or 0))
         return
 
     old_en = _parse_enable(old.get("enable"))
@@ -201,9 +225,11 @@ def _persist_update(old: dict, updated: dict, fields: dict) -> None:
     if only_enable:
         if old_en and not new_en:
             _apply_live_or_restart(remove_tag=old_tag)
+            _apply_inbound_rate(updated, old_port=int(old.get("port") or 0))
             return
         if not old_en and new_en:
             _apply_live_or_restart(add=updated)
+            _apply_inbound_rate(updated, old_port=int(old.get("port") or 0))
             return
 
     # 端口/账号/协议等：先删后加；若最终未启用则只删
@@ -212,8 +238,10 @@ def _persist_update(old: dict, updated: dict, fields: dict) -> None:
             _apply_live_or_restart(remove_tag=old_tag)
         else:
             _sync_config_disk()
+        _apply_inbound_rate(updated, old_port=int(old.get("port") or 0))
         return
     _apply_live_or_restart(replace_old_tag=old_tag, replace_inb=updated)
+    _apply_inbound_rate(updated, old_port=int(old.get("port") or 0))
 
 
 def _persist_and_hot(inb: dict, *, live_add: bool) -> None:
@@ -512,6 +540,8 @@ async def lifespan(app: FastAPI):
         xray.sync_live_from_store(_enabled_list())
     except Exception as e:  # noqa: BLE001
         log.exception("initial xray sync failed: %s", e)
+    for inb in _enabled_list():
+        _apply_inbound_rate(inb)
     _stop.clear()
     t = threading.Thread(target=_bg_loop, name="agent-bg", daemon=True)
     t.start()
@@ -650,6 +680,8 @@ async def add_inbound(request: Request):
                 stream_settings=body.get("streamSettings") or "{}",
                 sniffing=body.get("sniffing"),
                 listen=str(body.get("listen") or "").strip(),
+                uplink_limit_mbps=int(body.get("uplinkLimitMbps") or 0),
+                downlink_limit_mbps=int(body.get("downlinkLimitMbps") or 0),
             )
             _persist_add(inb)
         return ok(inb)
@@ -670,6 +702,7 @@ async def update_inbound(inbound_id: int, request: Request):
             for k in (
                 "port", "protocol", "remark", "enable", "total", "up", "down",
                 "expiryTime", "settings", "streamSettings", "sniffing", "listen",
+                "uplinkLimitMbps", "downlinkLimitMbps",
             ):
                 if k in body:
                     if k == "settings":
