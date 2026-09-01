@@ -5,11 +5,25 @@ import logging
 import os
 import subprocess
 import threading
-from typing import Optional
 
 log = logging.getLogger("socks-agent.ratelimit")
 
 IFB_DEV = "ifb0"
+
+
+def _tc_err_benign(msg: str) -> bool:
+    m = msg.lower()
+    return any(
+        k in m
+        for k in (
+            "file exists",
+            "eexist",
+            "exclusivity",
+            "already exists",
+            "cannot modify",
+            "exists",
+        )
+    )
 
 
 class RateLimiter:
@@ -17,6 +31,7 @@ class RateLimiter:
         self._iface = (iface or "").strip()
         self._lock = threading.RLock()
         self._ready = False
+        self._init_failed = False
         self._ports: dict[int, tuple[int, int]] = {}
 
     def apply(self, port: int, uplink_mbps: int, downlink_mbps: int) -> None:
@@ -81,7 +96,7 @@ class RateLimiter:
         if port <= 0:
             return
         with self._lock:
-            if not self._ensure_ready():
+            if not self._ready:
                 return
             self._clear_port(port)
             self._ports.pop(port, None)
@@ -97,35 +112,54 @@ class RateLimiter:
     def _ensure_ready(self) -> bool:
         if self._ready:
             return True
+        if self._init_failed:
+            return False
         if os.name != "posix" or not os.path.exists("/proc/net/route"):
             log.debug("ratelimit skipped: not linux")
+            self._init_failed = True
             return False
         iface = self._iface or _default_route_iface()
         if not iface:
             log.warning("ratelimit: no default route interface")
+            self._init_failed = True
             return False
         self._iface = iface
-        self._run_ignore("modprobe", "ifb", "numifbs=1")
-        self._run_ignore("ip", "link", "set", "dev", IFB_DEV, "up")
-        self._run_ignore_exists(
-            "tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "9999",
-        )
-        self._run_ignore_exists(
-            "tc", "class", "add", "dev", iface, "parent", "1:", "classid", "1:9999",
-            "htb", "rate", "10gbit", "ceil", "10gbit",
-        )
-        self._run_ignore_exists("tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
-        self._run_ignore_exists(
-            "tc", "qdisc", "add", "dev", IFB_DEV, "root", "handle", "1:", "htb", "default", "9999",
-        )
-        self._run_ignore_exists(
-            "tc", "class", "add", "dev", IFB_DEV, "parent", "1:", "classid", "1:9999",
-            "htb", "rate", "10gbit", "ceil", "10gbit",
-        )
+        try:
+            self._run_ignore("modprobe", "ifb", "numifbs=1")
+            self._run_ignore("ip", "link", "set", "dev", IFB_DEV, "up")
+            # replace 兼容已有 root qdisc（fq_codel / mq 等），避免 Exclusivity 导致 Agent 起不来
+            self._run_ignore(
+                "tc", "qdisc", "replace", "dev", iface, "root", "handle", "1:",
+                "htb", "default", "9999",
+            )
+            self._run_ignore_exists(
+                "tc", "class", "add", "dev", iface, "parent", "1:", "classid", "1:9999",
+                "htb", "rate", "10gbit", "ceil", "10gbit",
+            )
+            self._run_ignore_exists(
+                "tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress",
+            )
+            self._run_ignore(
+                "tc", "qdisc", "replace", "dev", IFB_DEV, "root", "handle", "1:",
+                "htb", "default", "9999",
+            )
+            self._run_ignore_exists(
+                "tc", "class", "add", "dev", IFB_DEV, "parent", "1:", "classid", "1:9999",
+                "htb", "rate", "10gbit", "ceil", "10gbit",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "ratelimit init failed on %s (agent continues, per-port limits disabled): %s",
+                iface, e,
+            )
+            self._init_failed = True
+            return False
         self._ready = True
         return True
 
     def _clear_port(self, port: int) -> None:
+        if not self._iface:
+            return
         minor = port & 0xFFFF
         prio = (port % 32000) + 1
         self._run_ignore_missing(
@@ -157,14 +191,16 @@ class RateLimiter:
     def _run_ignore(self, *args: str) -> None:
         try:
             self._run(*args)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            if _tc_err_benign(str(e)):
+                return
+            log.debug("ratelimit ignored: %s", e)
 
     def _run_ignore_exists(self, *args: str) -> None:
         try:
             self._run(*args)
         except Exception as e:  # noqa: BLE001
-            if "File exists" in str(e) or "EEXIST" in str(e):
+            if _tc_err_benign(str(e)):
                 return
             raise
 
@@ -172,7 +208,8 @@ class RateLimiter:
         try:
             self._run(*args)
         except Exception as e:  # noqa: BLE001
-            if "No such file" in str(e) or "Cannot find" in str(e):
+            m = str(e).lower()
+            if "no such file" in m or "cannot find" in m:
                 return
 
 
