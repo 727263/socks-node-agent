@@ -261,6 +261,36 @@ def humanize_uptime(sec: int) -> str:
     return f"{m} 分"
 
 
+def net_interfaces_all() -> dict[str, Any]:
+    """All non-lo interfaces with byte totals and best-effort rates."""
+    global _prev_net, _prev_net_at  # noqa: PLW0603
+    counters = _parse_net_dev()
+    default = _default_iface()
+    now = time.time()
+    dt = now - _prev_net_at if _prev_net_at else 0.0
+    ifaces: list[dict[str, Any]] = []
+    for name in sorted(counters.keys()):
+        if name == "lo":
+            continue
+        rx, tx = counters[name]
+        rx_rate = tx_rate = 0
+        if name in _prev_net and dt >= 0.05:
+            prx, ptx = _prev_net[name]
+            rx_rate = max(0, int((rx - prx) / dt))
+            tx_rate = max(0, int((tx - ptx) / dt))
+        ifaces.append({
+            "name": name, "rx": rx, "tx": tx,
+            "rx_rate": rx_rate, "tx_rate": tx_rate,
+        })
+    _prev_net = counters
+    _prev_net_at = now
+    return {"default_iface": default, "interfaces": ifaces}
+
+
+_prev_net: dict[str, tuple[int, int]] = {}
+_prev_net_at: float = 0.0
+
+
 def overview(*, xray_bin: str, xray_service: str, agent_service: str) -> dict[str, Any]:
     # CPU + 网速共用一次短采样，少睡一轮
     cpu_a = _cpu_snapshot()

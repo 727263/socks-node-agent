@@ -590,6 +590,13 @@ def agent_info():
     return ok(agent_upgrade.info_payload())
 
 
+@app.get("/api/system/net", dependencies=[Depends(require_token)])
+def system_net():
+    from . import sysinfo
+
+    return ok(sysinfo.net_interfaces_all())
+
+
 @app.post("/api/agent/upgrade", dependencies=[Depends(require_token)])
 async def agent_upgrade(request: Request):
     """从 GitHub 拉取新版本并重启 Agent 服务（保留 data/ 与 agent.env）。"""
